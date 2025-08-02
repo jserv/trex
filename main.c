@@ -23,6 +23,10 @@ int main()
 
     /* While the game is active */
     while (state_is_running()) {
+        /* Check for pending shutdown signals */
+        if (tui_check_shutdown())
+            break; /* This won't be reached, but for clarity */
+
         double current_time = state_get_time_ms();
         double delta_time = current_time - last_frame_time;
         last_frame_time = current_time;

@@ -88,6 +88,7 @@ extern tui_window_t *tui_curscr;
 /* TUI initialization and cleanup */
 tui_window_t *tui_init(void);
 int tui_cleanup(void);
+bool tui_check_shutdown(void);
 
 /* Terminal capability functions */
 tui_term_cap_t *tui_term_cap_new(void);

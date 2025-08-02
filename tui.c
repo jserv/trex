@@ -18,6 +18,9 @@ int tui_cols = 0;
 static struct termios orig_termios, saved_termios;
 static int term_initialized = 0, cursor_visibility = 1, colors_initialized = 0;
 
+/* Signal-safe shutdown handling */
+static volatile sig_atomic_t g_shutdown_requested = 0;
+
 /* Terminal capabilities cache */
 static tui_term_caps_t g_terminal_caps = {0};
 static bool g_caps_loaded = false, g_caps_initialized = false;
@@ -1684,9 +1687,20 @@ static void restore_terminal(void)
 
 static void handle_signal(int sig)
 {
-    restore_terminal();
-    signal(sig, SIG_DFL);
-    raise(sig);
+    g_shutdown_requested = sig; /* async-signal-safe operation */
+}
+
+bool tui_check_shutdown(void)
+{
+    if (g_shutdown_requested) {
+        int sig = g_shutdown_requested;
+        restore_terminal();
+        signal(sig, SIG_DFL);
+        raise(sig);
+        /* will not be reached but included for completeness */
+        return true;
+    }
+    return false;
 }
 
 static void handle_resize(int sig)
