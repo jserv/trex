@@ -1,0 +1,12 @@
+*.d
+*.o
+*.gch
+*.pch
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+*.out
+*.dSYM/
+trex

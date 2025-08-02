@@ -1,0 +1,1085 @@
+#include "private.h"
+#include "trex.h"
+
+/* Forward declarations for spatial collision system */
+static void collect_powerup(object_t *powerup);
+
+/* Helper functions for collision detection */
+static bool involves_ground_hole(object_t *obj1, object_t *obj2);
+static bool is_player_enemy(object_t *obj1, object_t *obj2);
+static bool is_player_powerup(object_t *obj1, object_t *obj2);
+
+/* Spatial collision detection helpers */
+typedef struct {
+    int left, right, top, bottom;
+} bounding_rect_t;
+
+static bounding_rect_t get_object_bounds(const object_t *obj);
+static bounding_rect_t get_player_bounds(const object_t *player_obj);
+static bool bounds_overlap(const bounding_rect_t *rect1,
+                           const bounding_rect_t *rect2);
+
+/* Values used to initialize objects */
+#define HEIGHT_ZERO 0
+
+/* Game state variables */
+static int user_score = 0, distance = 0, current_level = 0;
+static float powerup_time = -1, obstacle_time = -1;
+static bool is_dead = false, is_falling_animation = false,
+            can_throw_fireball = true;
+static object_type_t powerup_type;
+static double last_key_check_time = 0.0;
+static object_t player;
+
+/*
+ * Spatial collision detection optimization system
+ *
+ * This system divides the game world into horizontal buckets to reduce
+ * collision detection complexity from O(n²) to approximately O(n).
+ * Objects are placed into buckets based on their X coordinate, and
+ * collision checks only occur between objects in nearby buckets.
+ */
+#define SPATIAL_BUCKET_SIZE 64  /* Each bucket covers 64 pixels horizontally */
+#define SPATIAL_BUCKET_COUNT 32 /* Support screen width + some extra */
+#define MAX_OBJECTS 100         /* Default - will use config */
+#define SPATIAL_INVALID_INDEX -1
+
+typedef struct spatial_node {
+    object_t *object;
+    struct spatial_node *next;
+} spatial_node_t;
+
+typedef struct {
+    spatial_node_t **buckets;  /* Array of bucket heads */
+    spatial_node_t *node_pool; /* Pre-allocated node pool */
+    int bucket_count;          /* Number of buckets */
+    int max_objects;           /* Maximum objects supported */
+    int next_free_node;        /* Next available node in pool */
+} spatial_hash_t;
+
+static spatial_hash_t spatial_hash;
+
+/**
+ * Get spatial bucket index for x coordinate
+ * @x : X coordinate to map to bucket
+ *
+ * Return bucket index for spatial hash, clamped to valid range
+ */
+static inline int spatial_get_bucket(int x)
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    /* Clamp negative coordinates to first bucket */
+    if (x < 0)
+        return 0;
+
+    /* Calculate bucket index and clamp to maximum */
+    int bucket = x / cfg->spatial.bucket_size;
+    return (bucket >= spatial_hash.bucket_count) ? spatial_hash.bucket_count - 1
+                                                 : bucket;
+}
+
+/**
+ * Clear spatial hash (called each frame)
+ *
+ * Reset all buckets and node pool for next frame
+ */
+static void spatial_clear(void)
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    /* Initialize buckets on first use if needed */
+    if (!spatial_hash.buckets) {
+        spatial_hash.bucket_count = cfg->spatial.bucket_count;
+        spatial_hash.buckets =
+            calloc(spatial_hash.bucket_count, sizeof(spatial_node_t *));
+        spatial_hash.node_pool =
+            calloc(cfg->limits.max_objects, sizeof(spatial_node_t));
+        spatial_hash.max_objects = cfg->limits.max_objects;
+    }
+
+    for (int i = 0; i < spatial_hash.bucket_count; i++) {
+        spatial_hash.buckets[i] = NULL;
+    }
+    spatial_hash.next_free_node = 0;
+}
+
+/**
+ * Add object to spatial hash for collision detection optimization
+ * @object : Object to add to the spatial hash
+ *
+ * Objects are bucketed by X coordinate for faster collision queries
+ */
+static void spatial_add_object(object_t *object)
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    /* Early validation checks */
+    if (!object || !spatial_hash.buckets || !spatial_hash.node_pool)
+        return;
+
+    /* Skip objects that are completely off-screen to reduce collision workload
+     */
+    if (object->x + object->cols < -cfg->physics.bounds_buffer ||
+        object->x > RESOLUTION_COLS + cfg->physics.bounds_buffer)
+        return;
+
+    /* Prevent node pool overflow */
+    if (spatial_hash.next_free_node >= spatial_hash.max_objects)
+        return;
+
+    int bucket_idx = spatial_get_bucket(object->x);
+
+    /* Defensive bounds check */
+    if (bucket_idx < 0 || bucket_idx >= spatial_hash.bucket_count)
+        return;
+
+    /* Allocate node from pool and link to bucket */
+    spatial_node_t *node =
+        &spatial_hash.node_pool[spatial_hash.next_free_node++];
+    node->object = object;
+    node->next = spatial_hash.buckets[bucket_idx];
+    spatial_hash.buckets[bucket_idx] = node;
+}
+
+/**
+ * Find closest object to fireball using spatial queries
+ * @fireball : Fireball object to find target for
+ *
+ * Return closest targetable object or NULL if none found
+ */
+static object_t *find_closest_target(object_t *fireball)
+{
+    if (!fireball || !spatial_hash.buckets)
+        return NULL;
+
+    object_t *closest = NULL;
+    int min_distance = RESOLUTION_COLS;
+
+    /* Check current bucket and adjacent buckets */
+    int fireball_bucket = spatial_get_bucket(fireball->x);
+    for (int bucket_offset = -1; bucket_offset <= 1; bucket_offset++) {
+        int bucket_idx = fireball_bucket + bucket_offset;
+        if (bucket_idx < 0 || bucket_idx >= spatial_hash.bucket_count)
+            continue;
+
+        for (spatial_node_t *node = spatial_hash.buckets[bucket_idx];
+             node != NULL; node = node->next) {
+            object_t *obj = node->object;
+            if (obj && obj->x < min_distance &&
+                obj->type < OBJECT_EGG_INVINCIBLE) {
+                closest = obj;
+                min_distance = obj->x;
+            }
+        }
+    }
+
+    return closest;
+}
+
+
+/**
+ * Perform collision check between two specific objects
+ * @obj1 : First object in collision check
+ * @obj2 : Second object in collision check
+ *
+ * Check for overlap and handle collision effects if detected
+ */
+static void spatial_collision_check_pair(object_t *obj1, object_t *obj2)
+{
+    const game_config_t *cfg = ensure_cfg();
+    if (obj1 == obj2)
+        return;
+
+    /* Get bounding rectangles for collision detection */
+    bounding_rect_t bounds1, bounds2;
+
+    /* Apply special duck adjustments for player vs non-ground-hole collisions
+     */
+    if (obj1 == &player && !involves_ground_hole(obj1, obj2)) {
+        bounds1 = get_player_bounds(obj1);
+        bounds2 = get_object_bounds(obj2);
+    } else if (obj2 == &player && !involves_ground_hole(obj1, obj2)) {
+        bounds1 = get_object_bounds(obj1);
+        bounds2 = get_player_bounds(obj2);
+    } else {
+        /* Standard bounds for non-player or ground hole collisions */
+        bounds1 = get_object_bounds(obj1);
+        bounds2 = get_object_bounds(obj2);
+    }
+
+    /* Check for collision */
+    if (!bounds_overlap(&bounds1, &bounds2))
+        return; /* No collision detected */
+
+    /* Handle collision effects based on object types */
+
+    /* Fireball vs enemy collisions */
+    if (obj1->type == OBJECT_FIRE_BALL && obj2->type < OBJECT_EGG_INVINCIBLE) {
+        obj1->x = RESOLUTION_COLS + 1; /* Move fireball off-screen */
+        obj2->x = RESOLUTION_COLS + 1; /* Move target off-screen */
+        user_score += cfg->scoring.fireball_kill;
+        return;
+    }
+    if (obj2->type == OBJECT_FIRE_BALL && obj1->type < OBJECT_EGG_INVINCIBLE) {
+        obj2->x = RESOLUTION_COLS + 1; /* Move fireball off-screen */
+        obj1->x = RESOLUTION_COLS + 1; /* Move target off-screen */
+        user_score += cfg->scoring.fireball_kill;
+        return;
+    }
+
+    /* Player vs enemy collisions */
+    if (is_player_enemy(obj1, obj2)) {
+        object_t *enemy = (obj1 == &player) ? obj2 : obj1;
+
+        if (enemy->type == OBJECT_GROUND_HOLE) {
+            player.state = STATE_FALLING;
+            is_falling_animation = true;
+        } else if (powerup_time > 0.0f &&
+                   powerup_type == OBJECT_EGG_INVINCIBLE) {
+            /* Player is invincible, ignore collision */
+        } else {
+            play_kill_player();
+        }
+        return;
+    }
+
+    /* Player vs powerup collisions */
+    if (is_player_powerup(obj1, obj2)) {
+        object_t *powerup = (obj1 == &player) ? obj2 : obj1;
+        collect_powerup(powerup);
+    }
+}
+
+/**
+ * Handle power-up collection
+ * @powerup : Power-up object that was collected
+ *
+ * Apply power-up effects and remove from game
+ */
+static void collect_powerup(object_t *powerup)
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    if (powerup->type == OBJECT_EGG_INVINCIBLE) {
+        powerup_time = cfg->powerups.duration;
+        powerup_type = OBJECT_EGG_INVINCIBLE;
+        powerup->x = RESOLUTION_COLS + 1;
+        user_score += cfg->scoring.powerup_collect;
+    } else if (powerup->type == OBJECT_EGG_FIRE) {
+        powerup_time = cfg->powerups.duration;
+        powerup_type = OBJECT_EGG_FIRE;
+        powerup->x = RESOLUTION_COLS + 1;
+        user_score += cfg->scoring.powerup_collect;
+    }
+}
+
+/* Array to store the objects in the game - allocated dynamically */
+static object_t **objects = NULL;
+
+/**
+ * Generate a random object type based on probability
+ * @b_generate_egg : Whether egg generation is allowed
+ *
+ * Return randomly selected object type
+ */
+object_type_t random_object(bool b_generate_egg)
+{
+    /* Generate random value between 1 and 10000 with overflow protection */
+    long rand_val = random();
+    int random_value = (int) (rand_val % 10000) + 1;
+
+    const object_probability_t *probs = config_get_probs();
+    int count = config_get_prob_count();
+
+    for (int i = 0; i < count; i++) {
+        /* Is the generated value within range of any object? */
+        if (random_value >= probs[i].range_start &&
+            random_value < probs[i].range_end) {
+            /* Generated an egg but shouldn't have? Then generate again */
+            if (probs[i].object_type >= OBJECT_EGG_INVINCIBLE &&
+                !b_generate_egg)
+                return random_object(b_generate_egg);
+            return probs[i].object_type;
+        }
+    }
+
+    return OBJECT_CACTUS;
+}
+
+int play_find_free_slot()
+{
+    const game_config_t *cfg = ensure_cfg();
+    if (!objects)
+        return -1;
+
+    for (int i = 0; i < cfg->limits.max_objects; ++i) {
+        if (!objects[i])
+            return i;
+    }
+
+    return -1;
+}
+
+void cleanup_objects()
+{
+    const game_config_t *cfg = ensure_cfg();
+    if (!objects)
+        return;
+
+    for (int i = 0; i < cfg->limits.max_objects; ++i) {
+        if (objects[i]) {
+            free(objects[i]);
+            objects[i] = NULL;
+        }
+    }
+}
+
+/**
+ * Helper function to determine T-Rex color based on current game state
+ * Considers death state and active power-ups to select appropriate colors
+ * @r : Pointer to store red component (0-255)
+ * @g : Pointer to store green component (0-255)
+ * @b : Pointer to store blue component (0-255)
+ */
+static void get_trex_color(short *r, short *g, short *b)
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    *r = cfg->colors.trex_normal.r;
+    *g = cfg->colors.trex_normal.g;
+    *b = cfg->colors.trex_normal.b;
+
+    if (is_dead) {
+        *r = cfg->colors.trex_dead.r;
+        *g = cfg->colors.trex_dead.g;
+        *b = cfg->colors.trex_dead.b;
+        return;
+    }
+
+    if (powerup_time > 0.0f) {
+        if (powerup_type == OBJECT_EGG_INVINCIBLE) {
+            *r = cfg->colors.trex_invincible.r;
+            *g = cfg->colors.trex_invincible.g;
+            *b = cfg->colors.trex_invincible.b;
+        } else if (powerup_type == OBJECT_EGG_FIRE) {
+            *r = cfg->colors.trex_fire.r;
+            *g = cfg->colors.trex_fire.g;
+            *b = cfg->colors.trex_fire.b;
+        }
+    }
+}
+
+/**
+ * Get bounding rectangle for any object
+ * @obj : Object to get bounds for
+ *
+ * Return bounding rectangle in world coordinates
+ */
+static bounding_rect_t get_object_bounds(const object_t *obj)
+{
+    bounding_rect_t bounds = {0};
+    if (!obj)
+        return bounds;
+
+    bounds.left = obj->x + obj->bounding_box.x;
+    bounds.right = bounds.left + obj->bounding_box.width;
+    bounds.top = obj->y - obj->height + obj->bounding_box.y;
+    bounds.bottom = bounds.top + obj->bounding_box.height;
+
+    return bounds;
+}
+
+/**
+ * Get player bounding rectangle with duck state adjustments
+ * @player_obj : Player object to get bounds for
+ *
+ * Return adjusted bounding rectangle for ducking player
+ */
+static bounding_rect_t get_player_bounds(const object_t *player_obj)
+{
+    bounding_rect_t bounds = get_object_bounds(player_obj);
+
+    /* Apply duck adjustments if player is ducking */
+    if (player_obj->state == STATE_DUCK) {
+        bounds.top += 6;    /* Lower the top of hitbox */
+        bounds.right += 10; /* Extend width for duck posture */
+    }
+
+    return bounds;
+}
+
+/**
+ * Check if two bounding rectangles overlap
+ * @rect1 : First bounding rectangle
+ * @rect2 : Second bounding rectangle
+ *
+ * Return true if rectangles overlap
+ */
+static bool bounds_overlap(const bounding_rect_t *rect1,
+                           const bounding_rect_t *rect2)
+{
+    return !(rect1->left >= rect2->right || rect2->left >= rect1->right ||
+             rect1->top >= rect2->bottom || rect2->top >= rect1->bottom);
+}
+
+/**
+ * Check if either object in collision pair is a ground hole
+ * @obj1 : First collision object
+ * @obj2 : Second collision object
+ *
+ * Return true if either object is a ground hole
+ */
+static bool involves_ground_hole(object_t *obj1, object_t *obj2)
+{
+    if (!obj1 || !obj2)
+        return false;
+
+    return (obj1->type == OBJECT_GROUND_HOLE ||
+            obj2->type == OBJECT_GROUND_HOLE);
+}
+
+/**
+ * Check if collision is between player and an enemy
+ * @obj1 : First collision object
+ * @obj2 : Second collision object
+ *
+ * Return true if one is player and other is enemy
+ */
+static bool is_player_enemy(object_t *obj1, object_t *obj2)
+{
+    return ((obj1 == &player && obj2->enemy) ||
+            (obj2 == &player && obj1->enemy));
+}
+
+/**
+ * Check if collision is between player and a powerup
+ * @obj1 : First collision object
+ * @obj2 : Second collision object
+ *
+ * Return true if one is player and other is powerup (non-enemy)
+ */
+static bool is_player_powerup(object_t *obj1, object_t *obj2)
+{
+    if (!obj1 || !obj2)
+        return false;
+
+    return ((obj1 == &player && !obj2->enemy) ||
+            (obj2 == &player && !obj1->enemy));
+}
+
+/**
+ * Renders a game object to the screen with appropriate colors and animations
+ * @object : Pointer to the object to render (must not be NULL)
+ */
+void play_render_object(object_t *object)
+{
+    if (!object)
+        return;
+
+    const game_config_t *cfg = ensure_cfg();
+    if (object->type == OBJECT_TREX) {
+        /* Get appropriate T-Rex color based on game state */
+        short s_color_r, s_color_g, s_color_b;
+        get_trex_color(&s_color_r, &s_color_g, &s_color_b);
+
+        /* Select appropriate sprite based on state */
+        const sprite_t *sprite = (object->state == STATE_DUCK)
+                                     ? &sprite_trex_duck
+                                     : &sprite_trex_normal;
+
+        /* Draw T-Rex using sprite data */
+        for (int i = 0; i < sprite->rows; i++) {
+            for (int j = 0; j < sprite->cols; j++) {
+                if (sprite_get_pixel(sprite, i, j)) {
+                    draw_render_colored_block(
+                        object->x + j, object->y + i - object->height, 1, 1,
+                        s_color_r, s_color_g, s_color_b);
+                }
+            }
+        }
+
+        /* Handle leg animation for running state */
+        if (object->state != STATE_DUCK && object->frame > 0) {
+            /* Clear leg area for animation */
+            draw_render_colored_block(
+                object->x + 4, object->y + 12 - object->height, 8, 3, 0, 0, 0);
+
+            /* Draw animated legs based on frame */
+            if (object->frame == 1) {
+                /* Left leg raised */
+                draw_render_colored_block(object->x + 4,
+                                          object->y + 12 - object->height, 2, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 10,
+                                          object->y + 12 - object->height, 1, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 5,
+                                          object->y + 13 - object->height, 3, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 10,
+                                          object->y + 13 - object->height, 1, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 10,
+                                          object->y + 14 - object->height, 2, 1,
+                                          s_color_r, s_color_g, s_color_b);
+            } else if (object->frame == 2) {
+                /* Right leg raised */
+                draw_render_colored_block(object->x + 4,
+                                          object->y + 12 - object->height, 2, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 10,
+                                          object->y + 12 - object->height, 1, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 4,
+                                          object->y + 13 - object->height, 1, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 10,
+                                          object->y + 13 - object->height, 3, 1,
+                                          s_color_r, s_color_g, s_color_b);
+                draw_render_colored_block(object->x + 4,
+                                          object->y + 14 - object->height, 2, 1,
+                                          s_color_r, s_color_g, s_color_b);
+            }
+        }
+    }
+    if (object->type == OBJECT_GROUND_HOLE) {
+        draw_render_block(object->x, object->y - object->height, object->cols,
+                          object->rows, TUI_COLOR_PAIR(1));
+        draw_render_colored_block(object->x - 2, object->y - object->height, 2,
+                                  5, is_dead ? 178 : 182, is_dead ? 178 : 122,
+                                  is_dead ? 178 : 87);
+        draw_render_colored_block(
+            object->x + object->cols, object->y - object->height, 2, 5,
+            is_dead ? 178 : 182, is_dead ? 178 : 122, is_dead ? 178 : 87);
+    }
+    if (object->type == OBJECT_FIRE_BALL) {
+        draw_render_colored_block(object->x, object->y - object->height, 2, 1,
+                                  is_dead ? 178 : 182, is_dead ? 178 : 122,
+                                  is_dead ? 178 : 87);
+    } else {
+        /* Draw other objects based on their matrix */
+        for (int i = 0; i < object->rows; ++i) {
+            /* Draw the matrix columns */
+            for (int j = 0; j < object->cols; ++j) {
+                if (object->type == OBJECT_CACTUS) {
+                    /* Cactus color */
+                    short s_color_r = cfg->colors.cactus.r,
+                          s_color_g = cfg->colors.cactus.g,
+                          s_color_b = cfg->colors.cactus.b;
+
+                    /* If the player died, leave in grayscale */
+                    if (is_dead)
+                        s_color_r = 130, s_color_g = 130, s_color_b = 130;
+
+                    if (sprite_get_pixel(&sprite_cactus, i, j))
+                        draw_render_colored_block(
+                            object->x + j, object->y + i - object->height, 1, 1,
+                            s_color_r, s_color_g, s_color_b);
+                } else if (object->type == OBJECT_ROCK) {
+                    /* Rock color */
+                    short s_color_r = cfg->colors.rock.r,
+                          s_color_g = cfg->colors.rock.g,
+                          s_color_b = cfg->colors.rock.b;
+
+                    if (sprite_get_pixel(&sprite_rock, i, j))
+                        draw_render_colored_block(
+                            object->x + j, object->y + i - object->height, 1, 1,
+                            s_color_r, s_color_g, s_color_b);
+                } else if (object->type == OBJECT_EGG_INVINCIBLE) {
+                    /* Egg color */
+                    short s_color_r = cfg->colors.egg_base.r,
+                          s_color_g = cfg->colors.egg_base.g,
+                          s_color_b = cfg->colors.egg_base.b;
+
+                    if (object->frame == 1)
+                        s_color_r = 234, s_color_g = 227, s_color_b = 170;
+                    else if (object->frame == 2)
+                        s_color_r = 234, s_color_g = 212, s_color_b = 64;
+
+                    /* If the player died, leave in grayscale */
+                    if (is_dead)
+                        s_color_r = 170, s_color_g = 170, s_color_b = 170;
+
+                    if (sprite_get_pixel(&sprite_egg, i, j))
+                        draw_render_colored_block(
+                            object->x + j, object->y + i - object->height, 1, 1,
+                            s_color_r, s_color_g, s_color_b);
+                } else if (object->type == OBJECT_EGG_FIRE) {
+                    /* Egg color */
+                    short s_color_r = cfg->colors.egg_base.r,
+                          s_color_g = cfg->colors.egg_base.g,
+                          s_color_b = cfg->colors.egg_base.b;
+
+                    if (object->frame == 1)
+                        s_color_r = 255, s_color_g = 170, s_color_b = 80;
+                    else if (object->frame == 2)
+                        s_color_r = 200, s_color_g = 65, s_color_b = 40;
+
+                    /* If the player died, leave in grayscale */
+                    if (is_dead)
+                        s_color_r = 170, s_color_g = 170, s_color_b = 170;
+
+                    if (sprite_get_pixel(&sprite_egg, i, j))
+                        draw_render_colored_block(
+                            object->x + j, object->y + i - object->height, 1, 1,
+                            s_color_r, s_color_g, s_color_b);
+                } else if (object->type == OBJECT_PTERODACTYL) {
+                    /* Pterodactyl color */
+                    short s_color_r = cfg->colors.pterodactyl.r,
+                          s_color_g = cfg->colors.pterodactyl.g,
+                          s_color_b = cfg->colors.pterodactyl.b;
+
+                    /* If the player died, leave in grayscale */
+                    if (is_dead)
+                        s_color_r = 90, s_color_g = 90, s_color_b = 90;
+
+                    if (sprite_get_pixel(&sprite_pterodactyl, i, j))
+                        draw_render_colored_block(
+                            object->x + j, object->y + i - object->height, 1, 1,
+                            s_color_r, s_color_g, s_color_b);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Creates and adds a new game object at the specified position
+ * @x : X coordinate for the new object
+ * @y : Y coordinate for the new object
+ * @type : Type of object to create (must be valid object type)
+ */
+void play_add_object(int x, int y, object_type_t type)
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    /* Validate input parameters */
+    if ((int) type < 0 || (int) type >= cfg->limits.object_types)
+        return; /* Invalid object type */
+
+    /* Search for a free position within the array */
+    int i_index = play_find_free_slot();
+
+    /* If the returned position was different from -1, it means there is space
+     */
+    if (i_index != -1) {
+        object_t *object = malloc(sizeof(object_t));
+        if (!object)
+            return; /* Allocation failed - silently fail */
+
+        object->x = x;
+        object->y = y;
+        object->type = type;
+        play_init_object(object);
+
+        /* Store the created object in the array */
+        objects[i_index] = object;
+    }
+}
+
+/* Object initialization lookup table */
+static const struct {
+    int cols, rows, max_frames;
+    int bbox_x, bbox_y, bbox_width, bbox_height;
+    int y_adjust;
+    bool enemy;
+} object_init_data[] = {
+    [OBJECT_TREX] = {22, 15, 3, 8, 0, 6, 13, 0, false},
+    [OBJECT_CACTUS] = {13, 8, 1, 1, -1, 10, 10, 0, true},
+    [OBJECT_ROCK] = {11, 3, 1, 2, 0, 6, 3, 0, true},
+    [OBJECT_EGG_INVINCIBLE] = {13, 6, 3, 2, 2, 8, 3, 0, false},
+    [OBJECT_EGG_FIRE] = {13, 6, 3, 2, 2, 8, 3, 0, false},
+    [OBJECT_PTERODACTYL] = {32, 12, 1, 16, 0, 1, 12, -12, true},
+    [OBJECT_GROUND_HOLE] = {21, 5, 1, 14, -3, 2, 15, 5, true},
+    [OBJECT_FIRE_BALL] = {2, 1, 1, 0, 0, 2, 1, 0, false},
+};
+
+void play_init_object(object_t *object)
+{
+    if (!object || object->type < 0 || object->type > OBJECT_FIRE_BALL)
+        return;
+
+    /* Set sprite dimensions based on type */
+    switch (object->type) {
+    case OBJECT_CACTUS:
+        object->cols = sprite_cactus.cols;
+        object->rows = sprite_cactus.rows;
+        break;
+    case OBJECT_ROCK:
+        object->cols = sprite_rock.cols;
+        object->rows = sprite_rock.rows;
+        break;
+    case OBJECT_EGG_INVINCIBLE:
+    case OBJECT_EGG_FIRE:
+        object->cols = sprite_egg.cols;
+        object->rows = sprite_egg.rows;
+        break;
+    case OBJECT_PTERODACTYL:
+        object->cols = sprite_pterodactyl.cols;
+        object->rows = sprite_pterodactyl.rows;
+        object->y -= sprite_pterodactyl.rows;
+        break;
+    default:
+        object->cols = object_init_data[object->type].cols;
+        object->rows = object_init_data[object->type].rows;
+        break;
+    }
+
+    object->height = HEIGHT_ZERO;
+    object->max_frames = object_init_data[object->type].max_frames;
+    object->enemy = object_init_data[object->type].enemy;
+    object->y += object_init_data[object->type].y_adjust;
+
+    /* Set bounding box */
+    object->bounding_box.x = object_init_data[object->type].bbox_x;
+    object->bounding_box.y = object_init_data[object->type].bbox_y;
+    object->bounding_box.width = object_init_data[object->type].bbox_width;
+    object->bounding_box.height = object_init_data[object->type].bbox_height;
+
+    /* Final y adjustment */
+    if (object->type != OBJECT_PTERODACTYL)
+        object->y -= object->rows;
+}
+
+void play_kill_player()
+{
+    is_dead = true;
+}
+
+void play_init_world()
+{
+    /* Initialize configuration on first use */
+    const game_config_t *cfg = ensure_cfg();
+
+    /* Initialize random number generator once */
+    static bool rng_initialized = false;
+    if (!rng_initialized) {
+        srand(time(NULL));
+        rng_initialized = true;
+    }
+
+    /* Allocate objects array if needed */
+    if (!objects)
+        objects = calloc(cfg->limits.max_objects, sizeof(object_t *));
+
+    /* Clear the array that stores the objects */
+    cleanup_objects();
+
+    /* Reset game settings */
+    const level_config_t *level = config_get_level(current_level + 1);
+    obstacle_time =
+        level->spawn_min + (random() % (level->spawn_max - level->spawn_min));
+    const player_spawn_t *spawn = config_get_spawn();
+    player.x = spawn->x;
+    player.y = RESOLUTION_ROWS - spawn->y_offset;
+    player.type = OBJECT_TREX;
+    player.state = STATE_JUMPING;
+    player.rows = 15; /* T-Rex dimensions are fixed */
+    player.cols = 22;
+    player.height = 0;     /* Starting height offset */
+    player.frame = 0;      /* Animation frame */
+    player.max_frames = 3; /* T-Rex has 3 animation frames */
+
+    current_level = 0;
+    user_score = 0;
+    distance = 0;
+    is_falling_animation = false;
+    is_dead = false;
+
+    /* Initialize the player again */
+    play_init_object(&player);
+}
+
+void play_update_world(double elapsed)
+{
+    const game_config_t *cfg = ensure_cfg();
+    if (!objects)
+        return;
+
+    static double f_time_10ms = 0.0f;
+    static double f_time_150ms = 0.0f;
+    static double f_time_random = 0.0f;
+
+    f_time_10ms += elapsed;
+    f_time_150ms += elapsed;
+    f_time_random += elapsed;
+
+    /* If using any powerup, decrease its total time */
+    if (powerup_time > 0.0f)
+        powerup_time -= elapsed;
+
+    /* Update the game state if the player hasn't died yet */
+    if (!is_dead) {
+        /* Check if the player is still pressing the key to duck */
+        if (player.state == STATE_DUCK) {
+            /* If still pressing, set state as ducking, otherwise as running */
+            if (TICKCOUNT - last_key_check_time < cfg->powerups.duck_timeout) {
+                player.state = STATE_DUCK;
+                can_throw_fireball = false;
+            } else {
+                player.state = STATE_RUNNING;
+                can_throw_fireball = true;
+            }
+        }
+
+        /* Generate obstacles randomly */
+        if (f_time_random >= obstacle_time) {
+            object_type_t object_type =
+                random_object(powerup_time > 0.0f ? false : true);
+            play_add_object(RESOLUTION_COLS, RESOLUTION_ROWS - 5, object_type);
+
+            const level_config_t *level = config_get_level(current_level + 1);
+            obstacle_time = level->spawn_min +
+                            (random() % (level->spawn_max - level->spawn_min));
+            f_time_random = 0.0f;
+        }
+
+        /* Check if 10MS have passed since the last Update */
+        if (f_time_10ms >= cfg->timing.update_ms) {
+            /* If it has passed, reset the variable that stores the total time
+             */
+            f_time_10ms = 0.0f;
+
+            /* Update the player object according to the animation, jumping or
+               falling */
+            if (player.state == STATE_JUMPING) {
+                player.height += 1;
+
+                /* If reached maximum height, make him fall */
+                if (player.height > cfg->physics.jump_height)
+                    player.state = STATE_FALLING;
+            } else if (player.state == STATE_FALLING) {
+                player.height -= 1;
+
+                /* If reached the ground, change to running animation and reset
+                 * variables
+                 */
+                if (player.height <= 0 && !is_falling_animation) {
+                    player.state = STATE_RUNNING;
+                    player.frame = 0;
+                    player.height = 0;
+                } else if (is_falling_animation &&
+                           player.height <
+                               cfg->physics.fall_depth - player.rows)
+                    play_kill_player();
+            }
+
+            if (!is_falling_animation) {
+                /* Increment the distance traveled */
+                distance += current_level > 7 ? 2 : 1;
+
+                /* Clear spatial hash for this frame */
+                spatial_clear();
+
+                /* Update other game objects besides the player */
+                for (int i = 0; i < cfg->limits.max_objects; ++i) {
+                    object_t *object = objects[i];
+
+                    /* Valid pointer? */
+                    if (object) {
+                        /* If the object is a fireball, increment its x,
+                           otherwise decrement */
+                        if (object->type == OBJECT_FIRE_BALL)
+                            object->x += current_level > 7 ? 2 : 1;
+                        else
+                            object->x -= current_level > 7 ? 2 : 1;
+
+                        /* Add object to spatial hash for collision detection */
+                        spatial_add_object(object);
+                    }
+                }
+
+                /* Add player to spatial hash */
+                spatial_add_object(&player);
+
+                /* Perform collision detection using spatial queries */
+                for (int i = 0; i < cfg->limits.max_objects; ++i) {
+                    object_t *object = objects[i];
+                    if (!object)
+                        continue;
+
+                    /* Objects are already filtered by spatial_add_object */
+
+                    if (object->type == OBJECT_FIRE_BALL) {
+                        /* Fireballs seek targets using spatial hash
+                         * optimization */
+                        object_t *target = find_closest_target(object);
+                        if (target)
+                            spatial_collision_check_pair(object, target);
+                    } else {
+                        /* All other objects check collision with player */
+                        spatial_collision_check_pair(object, &player);
+                    }
+                }
+
+                /* Clean up objects that have moved off-screen */
+                for (int i = 0; i < cfg->limits.max_objects; ++i) {
+                    object_t *object = objects[i];
+                    if (object) {
+                        /* Has object passed the player and left the screen? */
+                        if (object->x + object->cols < 0 ||
+                            (object->type == OBJECT_FIRE_BALL &&
+                             object->x > RESOLUTION_COLS)) {
+                            /* Delete the object */
+                            free(object);
+                            objects[i] = NULL;
+
+                            const level_config_t *level =
+                                config_get_level(current_level + 1);
+                            user_score += level->level;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Check if 150MS have passed since the last Update */
+        if (f_time_150ms > cfg->timing.anim_ms) {
+            f_time_150ms = 0.0f;
+
+            /* Update the dinosaur animation frame (0..2) */
+            player.frame = (player.frame + 1) % player.max_frames;
+
+            /* Update other game objects besides the player */
+            for (int i = 0; i < cfg->limits.max_objects; ++i) {
+                if (objects[i])
+                    objects[i]->frame =
+                        (objects[i]->frame + 1) % objects[i]->max_frames;
+            }
+
+            /* Update the User Score */
+            user_score += cfg->scoring.per_frame;
+
+            /* Update the level if it meets the condition */
+            const level_config_t *level = config_get_level(current_level + 1);
+            if (user_score >= level->score_next &&
+                current_level != cfg->limits.max_level - 1) {
+                current_level++;
+            }
+        }
+    }
+}
+
+void play_render_world()
+{
+    const game_config_t *cfg = ensure_cfg();
+
+    /* Safety check - ensure objects array is allocated */
+    if (!objects)
+        return;
+
+    /* Draw ground layers */
+    const rgb_color_t *primary = is_dead ? &cfg->colors.ground_dead_primary
+                                         : &cfg->colors.ground_normal_primary;
+    const rgb_color_t *secondary = is_dead
+                                       ? &cfg->colors.ground_dead_secondary
+                                       : &cfg->colors.ground_normal_secondary;
+
+    draw_render_colored_block(0, RESOLUTION_ROWS - 5, RESOLUTION_COLS, 1,
+                              primary->r, primary->g, primary->b);
+    draw_render_colored_block(0, RESOLUTION_ROWS - 4, RESOLUTION_COLS, 3,
+                              secondary->r, secondary->g, secondary->b);
+    draw_render_colored_block(0, RESOLUTION_ROWS - 1, RESOLUTION_COLS, 1, 0, 0,
+                              0);
+
+    /* Draw specks */
+    const rgb_color_t *speck =
+        is_dead ? &cfg->colors.ground_dead_primary : &cfg->colors.ground_speck;
+    for (int i = 0; i < RESOLUTION_COLS; ++i) {
+        if (((distance + i) % cfg->render.speck_interval_1) == 0)
+            draw_render_text_with_background(
+                i, RESOLUTION_ROWS - 4, "_", TUI_A_BOLD, speck->r, speck->g,
+                speck->b, secondary->r, secondary->g, secondary->b);
+
+        if (((distance + i) % cfg->render.speck_interval_2) == 0)
+            draw_render_text_with_background(
+                i, RESOLUTION_ROWS - 3, ".", TUI_A_BOLD, speck->r, speck->g,
+                speck->b, secondary->r, secondary->g, secondary->b);
+    }
+
+    /* Draw other game objects */
+    for (int i = 0; i < cfg->limits.max_objects; ++i) {
+        object_t *object = objects[i];
+
+        /* Valid pointer? */
+        if (object)
+            play_render_object(object);
+    }
+
+    /* Draw the player (T-Rex dinosaur) */
+    play_render_object(&player);
+
+    /* Draw screen when the player died */
+    if (is_dead) {
+        static const char *death_text = "Failed";
+        static const int death_text_len = 9;
+        draw_render_colored_text((RESOLUTION_COLS >> 1) - (death_text_len >> 1),
+                                 (RESOLUTION_ROWS >> 1) - 5,
+                                 (char *) death_text, TUI_A_BOLD, 255, 70, 70);
+
+        char sz_user_score[32] = {0};
+        int score_len = snprintf(sz_user_score, sizeof(sz_user_score),
+                                 "Final Score: %d", user_score);
+        draw_render_colored_text((RESOLUTION_COLS >> 1) - (score_len >> 1),
+                                 (RESOLUTION_ROWS >> 1) - 4, sz_user_score, 0,
+                                 255, 255, 255);
+
+        static const char *restart_text = "Press SPACE to restart!";
+        static const int restart_text_len =
+            23; /* Cache strlen("Press SPACE to restart!") */
+        draw_render_colored_text(
+            (RESOLUTION_COLS >> 1) - (restart_text_len >> 1),
+            (RESOLUTION_ROWS >> 1) - 2, (char *) restart_text, 0, 255, 255,
+            255);
+    } else {
+        /* Draw the player's user score */
+        draw_render_colored_text(RESOLUTION_COLS - 20, 2, "User Score", 0, 255,
+                                 255, 255);
+
+        char sz_text[128] = {0};
+        snprintf(sz_text, sizeof(sz_text), "%d", user_score);
+        draw_render_colored_text(RESOLUTION_COLS - 8, 2, sz_text, TUI_A_BOLD, 0,
+                                 255, 0);
+
+        memset(sz_text, 0, 128);
+        int level_len =
+            snprintf(sz_text, sizeof(sz_text), "LEVEL %d", current_level + 1);
+        draw_render_colored_text((RESOLUTION_COLS >> 1) - (level_len >> 1), 2,
+                                 sz_text, TUI_A_BOLD, 255, 255, 255);
+    }
+}
+
+void play_handle_input(int key_code)
+{
+    if (!is_dead && !is_falling_animation) {
+        switch (key_code) {
+        case ' ':
+        case TUI_KEY_UP:
+            /* Check if the player is not already jumping or falling */
+            if (player.state != STATE_JUMPING &&
+                player.state != STATE_FALLING) {
+                player.state = STATE_JUMPING;
+                player.frame = 0;
+            }
+            break;
+        case TUI_KEY_DOWN:
+            /* Check if the player can throw fireball */
+            if (can_throw_fireball && powerup_time > 0.0f &&
+                powerup_type == OBJECT_EGG_FIRE)
+                play_add_object(player.x + 5, player.y + 10, OBJECT_FIRE_BALL);
+
+            /* Check if the player is not already jumping or falling */
+            if (player.state != STATE_JUMPING &&
+                player.state != STATE_FALLING) {
+                last_key_check_time = TICKCOUNT;
+                player.state = STATE_DUCK;
+            }
+            break;
+        default:
+            break;
+        }
+    } else if (is_dead && (key_code == ' ' || key_code == 10 ||
+                           key_code == TUI_KEY_UP || key_code == TUI_KEY_ENTER))
+        play_init_world();
+}
