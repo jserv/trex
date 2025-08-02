@@ -375,7 +375,6 @@ static int buf_rows = 0, buf_cols = 0;
 
 /* Static buffers for common escape sequences */
 static const char ESC_RESET[] = "\x1b[0m";
-static const char ESC_CLEAR[] = "\x1b[2J\x1b[H";
 static const char ESC_HIDE_CURSOR[] = "\x1b[?25l";
 static const char ESC_SHOW_CURSOR[] = "\x1b[?25h";
 
@@ -417,6 +416,9 @@ static void output_buffered_run(int y,
                                 char **screen_buf,
                                 char **prev_screen_buf,
                                 int **prev_attr_buf);
+
+/* Fast background clear with ECH optimization */
+static void tui_clear_fast(void);
 
 /* Fast row-level dirty checking using memcmp */
 static inline bool row_has_changes(int y, int start_col, int end_col)
@@ -1906,7 +1908,7 @@ tui_window_t *tui_init(void)
     }
 
     /* Clear screen */
-    tui_puts(ESC_CLEAR);
+    tui_clear_fast();
     tui_flush();
 
     return tui_stdscr;
@@ -1928,7 +1930,7 @@ int tui_cleanup(void)
 
     /* Reset colors and clear screen */
     tui_puts(ESC_RESET);
-    tui_puts(ESC_CLEAR);
+    tui_clear_fast();
     if (cursor_visibility == 0)
         tui_puts(ESC_SHOW_CURSOR);
 
@@ -2951,6 +2953,20 @@ static void apply_attributes(int attr)
     attr_state.last_bg = bg;
     attr_state.last_attrs = text_attrs;
     attr_state.initialized = true;
+}
+
+/* Fast background clear with ECH optimization */
+static void tui_clear_fast(void)
+{
+    if (g_terminal_caps.supports_ech) {
+        /* Use ECH (Erase Character) for current row – fewer bytes */
+        char buf[32];
+        int len = snprintf(buf, sizeof buf, "\x1b[%d;%dH\x1b[%dX", 1, 1,
+                           tui_lines * tui_cols);
+        tui_write(buf, len);
+    } else {
+        tui_puts("\x1b[2J\x1b[H");
+    }
 }
 
 int tui_refresh(tui_window_t *win)
