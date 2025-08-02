@@ -27,6 +27,10 @@ static bool bounds_overlap(const bounding_rect_t *rect1,
 /* Values used to initialize objects */
 #define HEIGHT_ZERO 0
 
+/* Jump buffer and coyote time constants (in milliseconds) */
+#define JUMP_BUFFER_MS 120
+#define COYOTE_TIME_MS 80
+
 /* Game state variables */
 static int user_score = 0, distance = 0, current_level = 0;
 static float powerup_time = -1, obstacle_time = -1;
@@ -35,6 +39,10 @@ static bool is_dead = false, is_falling_animation = false,
 static object_type_t powerup_type;
 static double last_key_check_time = 0.0;
 static object_t player;
+
+/* Jump buffer and coyote time state */
+static double last_jump_keydown = 0.0;
+static double left_ground_at = 0.0;
 
 /*
  * Spatial collision detection optimization system
@@ -474,6 +482,49 @@ static bool is_player_powerup(object_t const *obj1, object_t const *obj2)
 }
 
 /**
+ * Check if player is currently on the ground
+ *
+ * Return true if player is grounded (running or ducking)
+ */
+static bool is_player_on_ground(void)
+{
+    return (player.state == STATE_RUNNING || player.state == STATE_DUCK) &&
+           player.height <= 0;
+}
+
+/* Record jump key press for buffering */
+static void on_keydown_jump(void)
+{
+    last_jump_keydown = TICKCOUNT;
+}
+
+/* Attempt to execute a jump with buffer and coyote time */
+static void try_jump(void)
+{
+    if (is_dead || is_falling_animation)
+        return;
+
+    bool grounded_now = is_player_on_ground();
+    double current_time = TICKCOUNT;
+
+    if (grounded_now) {
+        left_ground_at = 0.0;
+    } else if (left_ground_at == 0.0) {
+        left_ground_at = current_time;
+    }
+
+    bool buffered = (current_time - last_jump_keydown) < JUMP_BUFFER_MS;
+    bool in_coyote = (left_ground_at > 0.0) &&
+                     (current_time - left_ground_at) < COYOTE_TIME_MS;
+
+    if (buffered && (grounded_now || in_coyote)) {
+        player.state = STATE_JUMPING;
+        player.frame = 0;
+        last_jump_keydown = 0.0;
+    }
+}
+
+/**
  * Renders a game object to the screen with appropriate colors and animations
  * @object : Pointer to the object to render (must not be NULL)
  */
@@ -792,6 +843,10 @@ void play_init_world()
     is_falling_animation = false;
     is_dead = false;
 
+    /* Reset jump buffer and coyote time state */
+    last_jump_keydown = 0.0;
+    left_ground_at = 0.0;
+
     /* Initialize the player again */
     play_init_object(&player);
 }
@@ -816,6 +871,9 @@ void play_update_world(double elapsed)
 
     /* Update the game state if the player hasn't died yet */
     if (!is_dead) {
+        /* Try to execute any buffered or coyote time jumps */
+        try_jump();
+
         /* Check if the player is still pressing the key to duck */
         if (player.state == STATE_DUCK) {
             /* If still pressing, set state as ducking, otherwise as running */
@@ -1061,12 +1119,8 @@ void play_handle_input(int key_code)
         switch (key_code) {
         case ' ':
         case TUI_KEY_UP:
-            /* Check if the player is not already jumping or falling */
-            if (player.state != STATE_JUMPING &&
-                player.state != STATE_FALLING) {
-                player.state = STATE_JUMPING;
-                player.frame = 0;
-            }
+            /* Record jump input for buffering */
+            on_keydown_jump();
             break;
         case TUI_KEY_DOWN:
             /* Check if the player can throw fireball */
