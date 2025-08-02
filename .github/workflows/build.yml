@@ -1,0 +1,57 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  detect-code-related-file-changes:                                                                                                                    
+    runs-on: ubuntu-latest
+    outputs: 
+      has_code_related_changes: ${{ steps.set_has_code_related_changes.outputs.has_code_related_changes }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Test changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          files: |
+              **
+              .clang-format
+              Makefile
+      - name: Set has_code_related_changes
+        id: set_has_code_related_changes
+        run: |
+          if [[ ${{ steps.changed-files.outputs.any_changed }} == true ]]; then
+            echo "has_code_related_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_code_related_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build with ASan/UBSan
+      run: make CFLAGS+="-fsanitize=address,undefined -fno-omit-frame-pointer" LDFLAGS+="-fsanitize=address,undefined"
+    - name: Run headless tests
+      env: 
+        TERM: xterm-256color
+      run: |
+        timeout 5s ./trex || [ $? -eq 124 ]
+        TUI_DISABLE_WRITEV=1 timeout 5s ./trex || [ $? -eq 124 ]
+
+  coding-style:
+    needs: [detect-code-related-file-changes]
+    if: needs.detect-code-related-file-changes.outputs.has_code_related_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: coding convention
+      run: |
+            .ci/check-newline.sh
+            .ci/check-format.sh
+      shell: bash
