@@ -999,92 +999,78 @@ static void tui_move_cached(int row, int col)
     if (row == cursor_cache.last_row && col == cursor_cache.last_col)
         return;
 
-    /* Try relative movement for adjacent positions first */
+    /* Use relative movement heuristic for small cursor jumps */
     if (cursor_cache.last_row >= 0 && cursor_cache.last_col >= 0) {
         int row_diff = row - cursor_cache.last_row;
         int col_diff = col - cursor_cache.last_col;
-
-        /* Calculate cost of relative vs absolute movement */
-        int abs_pos_cost = snprintf(NULL, 0, "\x1b[%d;%dH", row + 1, col + 1);
         bool use_relative = false;
 
-        /* Same row, move horizontally */
-        if (row_diff == 0 && col_diff != 0) {
-            if (col_diff == 1) {
-                tui_write("\033[C", 3); /* Move right one - 3 bytes */
+        /* Simple heuristic: use relative moves for small deltas */
+        if (abs(row_diff) <= 5 && abs(col_diff) <= 5) {
+            /* Special optimized cases first */
+            if (row_diff == 1 && col == 0) {
+                /* Next line start - cheapest possible */
+                tui_write("\r\n", 2);
                 use_relative = true;
-            } else if (col_diff == -1) {
-                tui_write("\033[D", 3); /* Move left one - 3 bytes */
+            } else if (row_diff == 0 && col == 0 && cursor_cache.last_col > 0) {
+                /* Beginning of current line */
+                tui_write("\r", 1);
                 use_relative = true;
-            } else if (col_diff > 0 && col_diff <= 20) {
-                /* Use relative if cheaper than absolute */
-                int rel_cost = snprintf(NULL, 0, "\033[%dC", col_diff) + 3;
-                if (rel_cost < abs_pos_cost) {
-                    char buf[16];
-                    int len = snprintf(buf, sizeof(buf), "\033[%dC", col_diff);
-                    tui_write(buf, len);
+            } else {
+                /* Generate relative moves for small jumps */
+                char buf[32];
+                int total_len = 0;
+
+                /* Vertical movement first */
+                if (row_diff > 0) {
+                    if (row_diff == 1) {
+                        memcpy(buf + total_len, "\033[B", 3);
+                        total_len += 3;
+                    } else {
+                        int len =
+                            snprintf(buf + total_len, sizeof(buf) - total_len,
+                                     "\033[%dB", row_diff);
+                        total_len += len;
+                    }
+                } else if (row_diff < 0) {
+                    if (row_diff == -1) {
+                        memcpy(buf + total_len, "\033[A", 3);
+                        total_len += 3;
+                    } else {
+                        int len =
+                            snprintf(buf + total_len, sizeof(buf) - total_len,
+                                     "\033[%dA", -row_diff);
+                        total_len += len;
+                    }
+                }
+
+                /* Horizontal movement second */
+                if (col_diff > 0) {
+                    if (col_diff == 1) {
+                        memcpy(buf + total_len, "\033[C", 3);
+                        total_len += 3;
+                    } else {
+                        int len =
+                            snprintf(buf + total_len, sizeof(buf) - total_len,
+                                     "\033[%dC", col_diff);
+                        total_len += len;
+                    }
+                } else if (col_diff < 0) {
+                    if (col_diff == -1) {
+                        memcpy(buf + total_len, "\033[D", 3);
+                        total_len += 3;
+                    } else {
+                        int len =
+                            snprintf(buf + total_len, sizeof(buf) - total_len,
+                                     "\033[%dD", -col_diff);
+                        total_len += len;
+                    }
+                }
+
+                if (total_len > 0) {
+                    tui_write(buf, total_len);
                     use_relative = true;
                 }
-            } else if (col_diff < 0 && col_diff >= -20) {
-                int rel_cost = snprintf(NULL, 0, "\033[%dD", -col_diff) + 3;
-                if (rel_cost < abs_pos_cost) {
-                    char buf[16];
-                    int len = snprintf(buf, sizeof(buf), "\033[%dD", -col_diff);
-                    tui_write(buf, len);
-                    use_relative = true;
-                }
-            }
-        }
-        /* Same column, move vertically */
-        else if (col_diff == 0 && row_diff != 0) {
-            if (row_diff == 1) {
-                tui_write("\033[B", 3); /* Move down one - 3 bytes */
-                use_relative = true;
-            } else if (row_diff == -1) {
-                tui_write("\033[A", 3); /* Move up one - 3 bytes */
-                use_relative = true;
-            } else if (row_diff > 0 && row_diff <= 10) {
-                int rel_cost = snprintf(NULL, 0, "\033[%dB", row_diff) + 3;
-                if (rel_cost < abs_pos_cost) {
-                    char buf[16];
-                    int len = snprintf(buf, sizeof(buf), "\033[%dB", row_diff);
-                    tui_write(buf, len);
-                    use_relative = true;
-                }
-            } else if (row_diff < 0 && row_diff >= -10) {
-                int rel_cost = snprintf(NULL, 0, "\033[%dA", -row_diff) + 3;
-                if (rel_cost < abs_pos_cost) {
-                    char buf[16];
-                    int len = snprintf(buf, sizeof(buf), "\033[%dA", -row_diff);
-                    tui_write(buf, len);
-                    use_relative = true;
-                }
-            }
-        }
-        /* Special cases */
-        else if (row_diff == 1 && col == 0) {
-            /* Next line start - cheapest possible */
-            tui_write("\r\n", 2);
-            use_relative = true;
-        } else if (row_diff == 0 && col == 0 && cursor_cache.last_col > 0) {
-            /* Beginning of current line */
-            tui_write("\r", 1);
-            use_relative = true;
-        }
-        /* Diagonal movements for adjacent cells */
-        else if (abs(row_diff) == 1 && abs(col_diff) == 1) {
-            /* For single diagonal moves, sometimes combining is cheaper */
-            int combined_cost = 6; /* \033[A + \033[C = 6 bytes */
-            if (combined_cost < abs_pos_cost) {
-                if (row_diff == -1)
-                    tui_write("\033[A", 3);
-                else
-                    tui_write("\033[B", 3);
-                if (col_diff == 1)
-                    tui_write("\033[C", 3);
-                else
-                    tui_write("\033[D", 3);
-                use_relative = true;
             }
         }
 
