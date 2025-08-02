@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "trex.h"
 
 /* Terminal capabilities structure */

@@ -1,3 +1,5 @@
+#include <time.h>
+
 #include "private.h"
 #include "trex.h"
 

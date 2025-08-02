@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #include "trex.h"
 
 /* Global configuration cache */
