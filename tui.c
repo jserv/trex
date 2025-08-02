@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
 #include <sys/uio.h>
 #include <termios.h>
 
@@ -2423,7 +2424,7 @@ static const char *get_cached_attr_sequence(short fg,
     }
 
     /* Not found, build the sequence */
-    char seq_buf[ESC_SEQ_MAX_LEN];
+    static char seq_buf[ESC_SEQ_MAX_LEN];
     int seq_len = 0;
 
     /* Start escape sequence */
