@@ -79,6 +79,7 @@ extern tui_window_t *tui_curscr;
 tui_window_t *tui_init(void);
 int tui_cleanup(void);
 bool tui_check_shutdown(void);
+bool tui_check_resize(void);
 
 /* Terminal capability functions */
 tui_term_cap_t *tui_term_cap_new(void);
@@ -425,6 +426,7 @@ void play_render_object(object_t const *object);
 void play_init_world();
 void play_update_world(double elapsed);
 void play_render_world();
+void play_adjust_for_resize();
 
 /* Input handling */
 void play_handle_input(int input);

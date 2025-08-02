@@ -29,6 +29,9 @@ int main()
         if (tui_check_shutdown())
             break; /* This won't be reached, but for clarity */
 
+        /* Check for pending resize signals */
+        tui_check_resize();
+
         double current_time = state_get_time_ms();
         double delta_time = current_time - last_frame_time;
         last_frame_time = current_time;

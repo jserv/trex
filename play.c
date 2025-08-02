@@ -851,6 +851,31 @@ void play_init_world()
     play_init_object(&player);
 }
 
+void play_adjust_for_resize()
+{
+    const player_spawn_t *spawn = config_get_spawn();
+    int new_player_y = RESOLUTION_ROWS - spawn->y_offset;
+
+    /* Adjust player position to maintain relative position on screen */
+    if (new_player_y > 0)
+        player.y = new_player_y;
+
+    /* Clean up objects that are now outside screen bounds */
+    if (objects) {
+        const game_config_t *cfg = ensure_cfg();
+        for (int i = 0; i < cfg->limits.max_objects; i++) {
+            if (objects[i] &&
+                /* Remove objects that are now way outside the screen bounds */
+                (objects[i]->y < -50 || objects[i]->y > RESOLUTION_ROWS + 50 ||
+                 objects[i]->x < -100 ||
+                 objects[i]->x > RESOLUTION_COLS + 100)) {
+                free(objects[i]);
+                objects[i] = NULL;
+            }
+        }
+    }
+}
+
 void play_update_world(double elapsed)
 {
     const game_config_t *cfg = ensure_cfg();

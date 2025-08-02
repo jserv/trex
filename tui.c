@@ -12,10 +12,14 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "trex.h"
 #include "tui.h"
 
 /* Forward declarations */
 static void apply_attributes(int attr);
+static int safe_full_write(int fd, const void *buf, size_t count);
+static int allocate_buffers(void);
+static void init_hierarchical_dirty_tracking(int screen_cols, int screen_rows);
 
 tui_window_t *tui_stdscr = NULL;
 int tui_lines = 0;
@@ -26,6 +30,9 @@ static int term_initialized = 0, cursor_visibility = 1, colors_initialized = 0;
 
 /* Signal-safe shutdown handling */
 static volatile sig_atomic_t g_shutdown_requested = 0;
+
+/* Signal-safe resize handling */
+static volatile sig_atomic_t g_resize_requested = 0;
 
 /* Terminal capabilities cache */
 static tui_term_caps_t g_terminal_caps = {0};
@@ -511,7 +518,7 @@ static bool send_query_and_wait_response(const char *query,
 
     /* Send query */
     size_t query_len = strlen(query);
-    if (write(STDOUT_FILENO, query, query_len) != (ssize_t) query_len)
+    if (safe_full_write(STDOUT_FILENO, query, query_len) != 0)
         return false;
 
     /* Wait for response */
@@ -820,6 +827,31 @@ static void advance_iovecs(struct iovec *restrict vecs,
     }
 }
 
+/* Wrapper that loops until the entire buffer is written or a hard error
+ * occurs.
+ * Returns 0 on success, -1 on error.
+ */
+static int safe_full_write(int fd, const void *buf, size_t count)
+{
+    const char *ptr = (const char *) buf;
+    size_t remaining = count;
+
+    while (remaining > 0) {
+        ssize_t n = write(fd, ptr, remaining);
+        if (n < 0) {
+            if (errno == EINTR) /* retry if interrupted */
+                continue;
+            return -1; /* propagate hard error */
+        }
+        if (n == 0) /* should never happen on tty */
+            return -1;
+
+        ptr += n;
+        remaining -= n;
+    }
+    return 0;
+}
+
 /* Wrapper that loops until the entire iovec array is flushed or a hard error
  * occurs.
  * Returns 0 on success, -1 on error.
@@ -877,16 +909,7 @@ static void tui_flush(void)
 
     /* Fallback implementation */
     if (output_buffer.len > 0) {
-        size_t written = 0;
-        while (written < output_buffer.len) {
-            ssize_t n = write(STDOUT_FILENO, output_buffer.data + written,
-                              output_buffer.len - written);
-            if (n > 0) {
-                written += n;
-            } else if (n < 0 && errno != EINTR) {
-                break;
-            }
-        }
+        safe_full_write(STDOUT_FILENO, output_buffer.data, output_buffer.len);
         output_buffer.len = 0;
     }
 }
@@ -933,15 +956,7 @@ static void tui_write(const char *data, size_t len)
 
         /* If data is still too large, write directly */
         if (len > OUTPUT_BUFFER_SIZE) {
-            size_t written = 0;
-            while (written < len) {
-                ssize_t n = write(STDOUT_FILENO, data + written, len - written);
-                if (n > 0) {
-                    written += n;
-                } else if (n < 0 && errno != EINTR) {
-                    break;
-                }
-            }
+            safe_full_write(STDOUT_FILENO, data, len);
             return;
         }
     }
@@ -1711,14 +1726,75 @@ bool tui_check_shutdown(void)
     return false;
 }
 
+static void handle_terminal_resize(void)
+{
+    struct winsize ws;
+
+    /* Use ioctl(TIOCGWINSZ) once as recommended by community Q&A */
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        /* Protect against tiny windows that could cause crashes */
+        int new_lines = (ws.ws_row < 3) ? 3 : ws.ws_row;
+        int new_cols = (ws.ws_col < 10) ? 10 : ws.ws_col;
+
+        tui_lines = new_lines;
+        tui_cols = new_cols;
+
+        /* Update window size */
+        if (tui_stdscr) {
+            tui_stdscr->maxy = tui_lines;
+            tui_stdscr->maxx = tui_cols;
+        }
+
+        /* Reallocate all internal TUI buffers for new window size */
+        if (allocate_buffers() == -1) {
+            /* If reallocation fails, try to restore to a safe state */
+            fprintf(stderr,
+                    "Warning: Failed to reallocate buffers after resize\n");
+        }
+
+        /* Reinitialize hierarchical dirty tracking for new screen size */
+        init_hierarchical_dirty_tracking(tui_cols, tui_lines);
+
+        /* Realloc dirty buffer for new window size */
+        if (tui_stdscr && tui_stdscr->dirty) {
+            int new_dirty_size = tui_lines;
+            unsigned char *new_dirty =
+                realloc(tui_stdscr->dirty, new_dirty_size);
+            if (new_dirty) {
+                tui_stdscr->dirty = new_dirty;
+                /* Initialize new dirty areas to require redraw */
+                memset(tui_stdscr->dirty, 1, new_dirty_size);
+            }
+        }
+
+        /* Force a complete redraw */
+        if (tui_stdscr) {
+            tui_clear_window(tui_stdscr);
+            tui_refresh(tui_stdscr);
+        }
+
+        /* Notify the drawing system to refresh everything */
+        draw_clear_back_buffer();
+
+        /* Adjust game object positions for new screen size */
+        play_adjust_for_resize();
+    }
+}
+
+bool tui_check_resize(void)
+{
+    if (g_resize_requested) {
+        g_resize_requested = 0;
+        handle_terminal_resize();
+        return true;
+    }
+    return false;
+}
+
 static void handle_resize(int sig)
 {
     (void) sig;
-    get_terminal_size();
-    if (tui_stdscr) {
-        tui_stdscr->maxy = tui_lines;
-        tui_stdscr->maxx = tui_cols;
-    }
+    g_resize_requested = 1; /* async-signal-safe operation */
 }
 
 static int setup_terminal(void)
