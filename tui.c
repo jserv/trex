@@ -773,10 +773,19 @@ static void load_terminal_capabilities(void)
 }
 
 /* Vectored output buffering functions */
-static void adjust_iovecs_after_partial_write(struct iovec *vecs,
-                                              int *count,
-                                              ssize_t bytes_written)
+
+/* Advance the iovec list after a short write.
+ * The Linux/POSIX manuals note that both write() and writev() can legally
+ * return less than the requested byte count, even on blocking fds. We must
+ * retry until all data is written.
+ */
+static void advance_iovecs(struct iovec *restrict vecs,
+                           int *restrict count,
+                           ssize_t bytes_written)
 {
+    if (bytes_written <= 0 || *count == 0)
+        return;
+
     ssize_t remaining = bytes_written;
     int i = 0;
 
@@ -800,48 +809,46 @@ static void adjust_iovecs_after_partial_write(struct iovec *vecs,
     }
 }
 
+/* Wrapper that loops until the entire iovec array is flushed or a hard error
+ * occurs.
+ * Returns 0 on success, -1 on error.
+ */
+static int safe_full_writev(int fd, struct iovec *restrict iov, int iovcnt)
+{
+    while (iovcnt > 0) {
+        ssize_t n = writev(fd, iov, iovcnt);
+        if (n < 0) {
+            if (errno == EINTR) /* retry if interrupted */
+                continue;
+            return -1; /* propagate hard error */
+        }
+        if (n == 0) /* should never happen on tty */
+            return -1;
+
+        /* Track partial writes for statistics */
+        ssize_t total_remaining = 0;
+        for (int i = 0; i < iovcnt; i++)
+            total_remaining += iov[i].iov_len;
+        if (n < total_remaining)
+            writev_stats.partial_writes++;
+
+        advance_iovecs(iov, &iovcnt, n);
+    }
+    return 0;
+}
+
 static void tui_flush_vectored(void)
 {
-    if (writev_buf.count == 0)
+    if (!writev_buf.count)
         return;
 
-    int vecs_remaining = writev_buf.count;
-    struct iovec *current_vecs = writev_buf.vecs;
-    ssize_t total_bytes = writev_buf.total_bytes;
-    ssize_t written_total = 0;
-
-    /* Track statistics */
     writev_stats.writev_calls++;
     writev_stats.total_vectors += writev_buf.count;
     writev_stats.total_bytes += writev_buf.total_bytes;
 
-    /* Robust partial write handling loop */
-    while (written_total < total_bytes && vecs_remaining > 0) {
-        ssize_t written = writev(STDOUT_FILENO, current_vecs, vecs_remaining);
-
-        if (written < 0) {
-            if (errno == EINTR) /* Interrupted by signal, retry */
-                continue;
-
-            /* Unrecoverable error, break and fallback */
-            writev_stats.fallback_writes++;
-            break;
-        }
-
-        if (written == 0) /* No progress made, avoid infinite loop */
-            break;
-
-        written_total += written;
-
-        if (written < total_bytes)
-            writev_stats.partial_writes++;
-
-        /* Adjust vectors for next iteration */
-        adjust_iovecs_after_partial_write(current_vecs, &vecs_remaining,
-                                          written);
-
-        /* Update remaining total for accurate loop condition */
-        total_bytes -= written;
+    if (safe_full_writev(STDOUT_FILENO, writev_buf.vecs, writev_buf.count) <
+        0) {
+        writev_stats.fallback_writes++; /* count hard failure */
     }
 
     /* Reset buffer */
