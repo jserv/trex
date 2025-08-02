@@ -5,9 +5,9 @@
 static void collect_powerup(object_t *powerup);
 
 /* Helper functions for collision detection */
-static bool involves_ground_hole(object_t *obj1, object_t *obj2);
-static bool is_player_enemy(object_t *obj1, object_t *obj2);
-static bool is_player_powerup(object_t *obj1, object_t *obj2);
+static bool involves_ground_hole(object_t const *obj1, object_t const *obj2);
+static bool is_player_enemy(object_t const *obj1, object_t const *obj2);
+static bool is_player_powerup(object_t const *obj1, object_t const *obj2);
 
 /* Spatial collision detection helpers */
 typedef struct {
@@ -148,7 +148,7 @@ static void spatial_add_object(object_t *object)
  *
  * Return closest targetable object or NULL if none found
  */
-static object_t *find_closest_target(object_t *fireball)
+static object_t *find_closest_target(object_t const *fireball)
 {
     if (!fireball || !spatial_hash.buckets)
         return NULL;
@@ -230,7 +230,7 @@ static void spatial_collision_check_pair(object_t *obj1, object_t *obj2)
 
     /* Player vs enemy collisions */
     if (is_player_enemy(obj1, obj2)) {
-        object_t *enemy = (obj1 == &player) ? obj2 : obj1;
+        object_t const *enemy = (obj1 == &player) ? obj2 : obj1;
 
         if (enemy->type == OBJECT_GROUND_HOLE) {
             player.state = STATE_FALLING;
@@ -430,7 +430,7 @@ static bool bounds_overlap(const bounding_rect_t *rect1,
  *
  * Return true if either object is a ground hole
  */
-static bool involves_ground_hole(object_t *obj1, object_t *obj2)
+static bool involves_ground_hole(object_t const *obj1, object_t const *obj2)
 {
     if (!obj1 || !obj2)
         return false;
@@ -446,7 +446,7 @@ static bool involves_ground_hole(object_t *obj1, object_t *obj2)
  *
  * Return true if one is player and other is enemy
  */
-static bool is_player_enemy(object_t *obj1, object_t *obj2)
+static bool is_player_enemy(object_t const *obj1, object_t const *obj2)
 {
     return ((obj1 == &player && obj2->enemy) ||
             (obj2 == &player && obj1->enemy));
@@ -459,7 +459,7 @@ static bool is_player_enemy(object_t *obj1, object_t *obj2)
  *
  * Return true if one is player and other is powerup (non-enemy)
  */
-static bool is_player_powerup(object_t *obj1, object_t *obj2)
+static bool is_player_powerup(object_t const *obj1, object_t const *obj2)
 {
     if (!obj1 || !obj2)
         return false;
@@ -472,7 +472,7 @@ static bool is_player_powerup(object_t *obj1, object_t *obj2)
  * Renders a game object to the screen with appropriate colors and animations
  * @object : Pointer to the object to render (must not be NULL)
  */
-void play_render_object(object_t *object)
+void play_render_object(object_t const *object)
 {
     if (!object)
         return;
@@ -578,14 +578,14 @@ void play_render_object(object_t *object)
                             s_color_r, s_color_g, s_color_b);
                 } else if (object->type == OBJECT_ROCK) {
                     /* Rock color */
-                    short s_color_r = cfg->colors.rock.r,
-                          s_color_g = cfg->colors.rock.g,
-                          s_color_b = cfg->colors.rock.b;
-
-                    if (sprite_get_pixel(&sprite_rock, i, j))
+                    if (sprite_get_pixel(&sprite_rock, i, j)) {
+                        short s_color_r = cfg->colors.rock.r,
+                              s_color_g = cfg->colors.rock.g,
+                              s_color_b = cfg->colors.rock.b;
                         draw_render_colored_block(
                             object->x + j, object->y + i - object->height, 1, 1,
                             s_color_r, s_color_g, s_color_b);
+                    }
                 } else if (object->type == OBJECT_EGG_INVINCIBLE) {
                     /* Egg color */
                     short s_color_r = cfg->colors.egg_base.r,
@@ -1000,7 +1000,7 @@ void play_render_world()
 
     /* Draw other game objects */
     for (int i = 0; i < cfg->limits.max_objects; ++i) {
-        object_t *object = objects[i];
+        object_t const *object = objects[i];
 
         /* Valid pointer? */
         if (object)

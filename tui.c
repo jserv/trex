@@ -1950,7 +1950,7 @@ static inline unsigned int hash_color_pair(uint16_t fg_bg)
 {
     /* FNV-1a hash for better distribution */
     uint32_t hash = 2166136261U;
-    uint8_t *bytes = (uint8_t *) &fg_bg;
+    uint8_t const *bytes = (uint8_t const *) &fg_bg;
     for (int i = 0; i < 2; i++) {
         hash ^= bytes[i];
         hash *= 16777619U;

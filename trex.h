@@ -428,7 +428,7 @@ void play_add_object(int x, int y, object_type_t type);
 void cleanup_objects();
 
 /* Rendering functions */
-void play_render_object(object_t *object);
+void play_render_object(object_t const *object);
 
 /* World management */
 void play_init_world();
