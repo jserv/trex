@@ -107,6 +107,12 @@ static dirty_tile_t *dirty_l1_tiles = NULL;
 static dirty_tile_t *dirty_l2_blocks = NULL;
 static int dirty_tile_pool_used = 0;
 
+/* Bitmap for O(1) membership checks in sparse tracking */
+#define BITMAP_WORDS ((MAX_L1_TILES_X * MAX_L1_TILES_Y + 63) / 64)
+#define BITMAP_L2_WORDS ((MAX_L2_BLOCKS_X * MAX_L2_BLOCKS_Y + 63) / 64)
+static uint64_t l1_tile_bitmap[BITMAP_WORDS];
+static uint64_t l2_block_bitmap[BITMAP_L2_WORDS];
+
 static struct {
     int min_row, max_row;
     int min_col, max_col;
@@ -1154,9 +1160,7 @@ static void init_sparse_dirty_tracking(void)
     dirty_region.use_sparse_tracking = true;
 }
 
-/* Sparse tile allocation - now enabled */
-#define ENABLE_SPARSE_TILES 1
-#ifdef ENABLE_SPARSE_TILES
+/* Sparse tile allocation */
 static dirty_tile_t *alloc_dirty_tile(uint16_t row, uint16_t col)
 {
     if (!dirty_tile_free_list || dirty_tile_pool_used >= DIRTY_TILE_POOL_SIZE)
@@ -1180,11 +1184,50 @@ static void free_dirty_tile(dirty_tile_t *tile)
     dirty_tile_free_list = tile;
     dirty_tile_pool_used--;
 }
-#endif
+
+/* Fast bitmap-based membership checks for sparse tracking */
+static inline void set_l1_tile_bitmap(int tile_row, int tile_col)
+{
+    if (tile_row >= MAX_L1_TILES_Y || tile_col >= MAX_L1_TILES_X)
+        return;
+    int bit_index = tile_row * MAX_L1_TILES_X + tile_col;
+    int word_index = bit_index / 64;
+    int bit_offset = bit_index % 64;
+    l1_tile_bitmap[word_index] |= (1ULL << bit_offset);
+}
+
+static inline bool check_l1_tile_bitmap(int tile_row, int tile_col)
+{
+    if (tile_row >= MAX_L1_TILES_Y || tile_col >= MAX_L1_TILES_X)
+        return false;
+    int bit_index = tile_row * MAX_L1_TILES_X + tile_col;
+    int word_index = bit_index / 64;
+    int bit_offset = bit_index % 64;
+    return (l1_tile_bitmap[word_index] & (1ULL << bit_offset)) != 0;
+}
+
+static inline void set_l2_block_bitmap(int block_row, int block_col)
+{
+    if (block_row >= MAX_L2_BLOCKS_Y || block_col >= MAX_L2_BLOCKS_X)
+        return;
+    int bit_index = block_row * MAX_L2_BLOCKS_X + block_col;
+    int word_index = bit_index / 64;
+    int bit_offset = bit_index % 64;
+    l2_block_bitmap[word_index] |= (1ULL << bit_offset);
+}
+
+static inline bool check_l2_block_bitmap(int block_row, int block_col)
+{
+    if (block_row >= MAX_L2_BLOCKS_Y || block_col >= MAX_L2_BLOCKS_X)
+        return false;
+    int bit_index = block_row * MAX_L2_BLOCKS_X + block_col;
+    int word_index = bit_index / 64;
+    int bit_offset = bit_index % 64;
+    return (l2_block_bitmap[word_index] & (1ULL << bit_offset)) != 0;
+}
 
 static void reset_sparse_dirty_tracking(void)
 {
-#ifdef ENABLE_SPARSE_TILES
     /* Return all tiles to free list */
     dirty_tile_t *current = dirty_l1_tiles;
     while (current) {
@@ -1201,7 +1244,10 @@ static void reset_sparse_dirty_tracking(void)
     }
 
     dirty_l1_tiles = dirty_l2_blocks = NULL;
-#endif
+
+    /* Clear bitmaps for fast membership checks */
+    memset(l1_tile_bitmap, 0, sizeof(l1_tile_bitmap));
+    memset(l2_block_bitmap, 0, sizeof(l2_block_bitmap));
 }
 
 /* Initialize hierarchical tile system */
@@ -1236,42 +1282,32 @@ static void init_hierarchical_dirty_tracking(int screen_cols, int screen_rows)
 /* Add sparse tile to linked list if not already present */
 static void add_sparse_l1_tile(int tile_row, int tile_col)
 {
-#ifdef ENABLE_SPARSE_TILES
-    /* Check if tile already exists in sparse list */
-    dirty_tile_t *current = dirty_l1_tiles;
-    while (current) {
-        if (current->row == tile_row && current->col == tile_col)
-            return; /* Already tracked */
-        current = current->next;
-    }
+    /* Fast bitmap check for membership */
+    if (check_l1_tile_bitmap(tile_row, tile_col))
+        return; /* Already tracked */
 
     /* Add new tile to sparse list */
     dirty_tile_t *new_tile = alloc_dirty_tile(tile_row, tile_col);
     if (new_tile) {
         new_tile->next = dirty_l1_tiles;
         dirty_l1_tiles = new_tile;
+        set_l1_tile_bitmap(tile_row, tile_col);
     }
-#endif
 }
 
 static void add_sparse_l2_block(int block_row, int block_col)
 {
-#ifdef ENABLE_SPARSE_TILES
-    /* Check if block already exists in sparse list */
-    dirty_tile_t *current = dirty_l2_blocks;
-    while (current) {
-        if (current->row == block_row && current->col == block_col)
-            return; /* Already tracked */
-        current = current->next;
-    }
+    /* Fast bitmap check for membership */
+    if (check_l2_block_bitmap(block_row, block_col))
+        return; /* Already tracked */
 
     /* Add new block to sparse list */
     dirty_tile_t *new_block = alloc_dirty_tile(block_row, block_col);
     if (new_block) {
         new_block->next = dirty_l2_blocks;
         dirty_l2_blocks = new_block;
+        set_l2_block_bitmap(block_row, block_col);
     }
-#endif
 }
 
 static void mark_dirty(int row, int col)
@@ -2933,7 +2969,6 @@ int tui_refresh(tui_window_t *win)
 
         dirty_region.frame_count++;
 
-#ifdef ENABLE_SPARSE_TILES
         if (dirty_region.use_sparse_tracking) {
             /* Count sparse tiles */
             dirty_tile_t *current = dirty_l1_tiles;
@@ -2974,10 +3009,8 @@ int tui_refresh(tui_window_t *win)
                 (dirty_region.prefer_sparse_mode && sparse_tile_count > 0 &&
                  sparse_tile_count < tile_area / 2);
         }
-#endif
 
         if (use_sparse_scanning) {
-#ifdef ENABLE_SPARSE_TILES
             /* Sparse scanning: iterate only through dirty tiles */
             dirty_region.total_scans++;
             dirty_region.sparse_hits++;
@@ -3005,70 +3038,129 @@ int tui_refresh(tui_window_t *win)
 
                 current = current->next;
             }
-#endif
         } else if (dirty_region.use_hierarchical_tiles) {
             dirty_region.total_scans++;
 
-            /* Level 2: Scan 32x32 blocks first */
-            int l2_start_row = scan_min_row / TILE_L2_SIZE;
-            int l2_end_row = scan_max_row / TILE_L2_SIZE;
-            int l2_start_col = scan_min_col / TILE_L2_SIZE;
-            int l2_end_col = scan_max_col / TILE_L2_SIZE;
+            /* Sparse hierarchical scanning: only iterate via dirty L2 block */
+            if (dirty_region.use_sparse_tracking) {
+                dirty_tile_t *current_l2 = dirty_l2_blocks;
+                while (current_l2) {
+                    int l2_row = current_l2->row;
+                    int l2_col = current_l2->col;
 
-            for (int l2_row = l2_start_row; l2_row <= l2_end_row; l2_row++) {
-                for (int l2_col = l2_start_col; l2_col <= l2_end_col;
-                     l2_col++) {
-                    /* Only scan L2 block if it's marked dirty */
-                    if (!has_l2_block_changes(l2_row, l2_col)) {
-                        dirty_region.l2_scans_avoided++;
-                        continue;
-                    }
+                    /* Check if L2 block intersects with scan region */
+                    int l2_start_row_px = l2_row * TILE_L2_SIZE;
+                    int l2_end_row_px = l2_start_row_px + TILE_L2_SIZE - 1;
+                    int l2_start_col_px = l2_col * TILE_L2_SIZE;
+                    int l2_end_col_px = l2_start_col_px + TILE_L2_SIZE - 1;
 
-                    /* Level 1: Scan 8x8 tiles within this L2 block */
-                    int l1_start_row = l2_row * (TILE_L2_SIZE / TILE_L1_SIZE);
-                    int l1_end_row =
-                        (l2_row + 1) * (TILE_L2_SIZE / TILE_L1_SIZE) - 1;
-                    int l1_start_col = l2_col * (TILE_L2_SIZE / TILE_L1_SIZE);
-                    int l1_end_col =
-                        (l2_col + 1) * (TILE_L2_SIZE / TILE_L1_SIZE) - 1;
+                    if (l2_end_row_px >= scan_min_row &&
+                        l2_start_row_px <= scan_max_row &&
+                        l2_end_col_px >= scan_min_col &&
+                        l2_start_col_px <= scan_max_col) {
+                        /* Sparse L1 scanning within this L2 block */
+                        dirty_tile_t *current_l1 = dirty_l1_tiles;
+                        while (current_l1) {
+                            int l1_row = current_l1->row;
+                            int l1_col = current_l1->col;
 
-                    /* Clamp L1 range to screen bounds */
-                    if (l1_end_row >= dirty_region.l1_tiles_y)
-                        l1_end_row = dirty_region.l1_tiles_y - 1;
-                    if (l1_end_col >= dirty_region.l1_tiles_x)
-                        l1_end_col = dirty_region.l1_tiles_x - 1;
+                            /* Check if L1 tile is within this L2 block */
+                            int l1_l2_row =
+                                l1_row / (TILE_L2_SIZE / TILE_L1_SIZE);
+                            int l1_l2_col =
+                                l1_col / (TILE_L2_SIZE / TILE_L1_SIZE);
 
-                    /* Further constrain to intersect with actual dirty region
-                     */
-                    int l1_scan_start_row = scan_min_row / TILE_L1_SIZE;
-                    int l1_scan_end_row = scan_max_row / TILE_L1_SIZE;
-                    int l1_scan_start_col = scan_min_col / TILE_L1_SIZE;
-                    int l1_scan_end_col = scan_max_col / TILE_L1_SIZE;
+                            if (l1_l2_row == l2_row && l1_l2_col == l2_col) {
+                                /* Check if L1 tile intersects with scan reg */
+                                int l1_start_row_px = l1_row * TILE_L1_SIZE;
+                                int l1_end_row_px =
+                                    l1_start_row_px + TILE_L1_SIZE - 1;
+                                int l1_start_col_px = l1_col * TILE_L1_SIZE;
+                                int l1_end_col_px =
+                                    l1_start_col_px + TILE_L1_SIZE - 1;
 
-                    if (l1_start_row < l1_scan_start_row)
-                        l1_start_row = l1_scan_start_row;
-                    if (l1_end_row > l1_scan_end_row)
-                        l1_end_row = l1_scan_end_row;
-                    if (l1_start_col < l1_scan_start_col)
-                        l1_start_col = l1_scan_start_col;
-                    if (l1_end_col > l1_scan_end_col)
-                        l1_end_col = l1_scan_end_col;
-
-                    for (int l1_row = l1_start_row; l1_row <= l1_end_row;
-                         l1_row++) {
-                        for (int l1_col = l1_start_col; l1_col <= l1_end_col;
-                             l1_col++) {
-                            /* Only scan L1 tile if it's marked dirty */
-                            if (!has_l1_tile_changes(l1_row, l1_col)) {
-                                dirty_region.l1_scans_avoided++;
-                                continue;
+                                if (l1_end_row_px >= scan_min_row &&
+                                    l1_start_row_px <= scan_max_row &&
+                                    l1_end_col_px >= scan_min_col &&
+                                    l1_start_col_px <= scan_max_col) {
+                                    /* Scan this L1 tile */
+                                    scan_l1_tile(l1_row, l1_col, buf_rows,
+                                                 buf_cols, scan_min_row,
+                                                 scan_max_row, scan_min_col,
+                                                 scan_max_col, &has_changes);
+                                }
                             }
+                            current_l1 = current_l1->next;
+                        }
+                    }
+                    current_l2 = current_l2->next;
+                }
+            } else {
+                /* Traditional hierarchical scanning: full array scan */
+                int l2_start_row = scan_min_row / TILE_L2_SIZE;
+                int l2_end_row = scan_max_row / TILE_L2_SIZE;
+                int l2_start_col = scan_min_col / TILE_L2_SIZE;
+                int l2_end_col = scan_max_col / TILE_L2_SIZE;
 
-                            /* Scan this 8x8 tile for actual changes */
-                            scan_l1_tile(l1_row, l1_col, buf_rows, buf_cols,
-                                         scan_min_row, scan_max_row,
-                                         scan_min_col, scan_max_col,
-                                         &has_changes);
+                for (int l2_row = l2_start_row; l2_row <= l2_end_row;
+                     l2_row++) {
+                    for (int l2_col = l2_start_col; l2_col <= l2_end_col;
+                         l2_col++) {
+                        /* Only scan L2 block if it's marked dirty */
+                        if (!has_l2_block_changes(l2_row, l2_col)) {
+                            dirty_region.l2_scans_avoided++;
+                            continue;
+                        }
+
+                        /* Level 1: Scan 8x8 tiles within this L2 block */
+                        int l1_start_row =
+                            l2_row * (TILE_L2_SIZE / TILE_L1_SIZE);
+                        int l1_end_row =
+                            (l2_row + 1) * (TILE_L2_SIZE / TILE_L1_SIZE) - 1;
+                        int l1_start_col =
+                            l2_col * (TILE_L2_SIZE / TILE_L1_SIZE);
+                        int l1_end_col =
+                            (l2_col + 1) * (TILE_L2_SIZE / TILE_L1_SIZE) - 1;
+
+                        /* Clamp L1 range to screen bounds */
+                        if (l1_end_row >= dirty_region.l1_tiles_y)
+                            l1_end_row = dirty_region.l1_tiles_y - 1;
+                        if (l1_end_col >= dirty_region.l1_tiles_x)
+                            l1_end_col = dirty_region.l1_tiles_x - 1;
+
+                        /* Further constrain to intersect with actual dirty
+                         * region
+                         */
+                        int l1_scan_start_row = scan_min_row / TILE_L1_SIZE;
+                        int l1_scan_end_row = scan_max_row / TILE_L1_SIZE;
+                        int l1_scan_start_col = scan_min_col / TILE_L1_SIZE;
+                        int l1_scan_end_col = scan_max_col / TILE_L1_SIZE;
+
+                        if (l1_start_row < l1_scan_start_row)
+                            l1_start_row = l1_scan_start_row;
+                        if (l1_end_row > l1_scan_end_row)
+                            l1_end_row = l1_scan_end_row;
+                        if (l1_start_col < l1_scan_start_col)
+                            l1_start_col = l1_scan_start_col;
+                        if (l1_end_col > l1_scan_end_col)
+                            l1_end_col = l1_scan_end_col;
+
+                        for (int l1_row = l1_start_row; l1_row <= l1_end_row;
+                             l1_row++) {
+                            for (int l1_col = l1_start_col;
+                                 l1_col <= l1_end_col; l1_col++) {
+                                /* Only scan L1 tile if it's marked dirty */
+                                if (!has_l1_tile_changes(l1_row, l1_col)) {
+                                    dirty_region.l1_scans_avoided++;
+                                    continue;
+                                }
+
+                                /* Scan this 8x8 tile for actual changes */
+                                scan_l1_tile(l1_row, l1_col, buf_rows, buf_cols,
+                                             scan_min_row, scan_max_row,
+                                             scan_min_col, scan_max_col,
+                                             &has_changes);
+                            }
                         }
                     }
                 }
