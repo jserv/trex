@@ -1731,7 +1731,7 @@ static int setup_terminal(void)
 
     orig_termios = saved_termios;
     orig_termios.c_lflag &= ~(ECHO | ICANON);
-    orig_termios.c_cc[VMIN] = 1;
+    orig_termios.c_cc[VMIN] = 0; /* instantaneous read */
     orig_termios.c_cc[VTIME] = 0;
 
     if (tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios) == -1)
@@ -2520,7 +2520,7 @@ int tui_init_color(short color, short r, short g, short b)
 int tui_raw(void)
 {
     orig_termios.c_lflag &= ~(ICANON | ISIG);
-    orig_termios.c_cc[VMIN] = 1;
+    orig_termios.c_cc[VMIN] = 0; /* instantaneous read */
     orig_termios.c_cc[VTIME] = 0;
     return tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
 }
@@ -2534,7 +2534,7 @@ int tui_noraw(void)
 int tui_cbreak(void)
 {
     orig_termios.c_lflag &= ~ICANON;
-    orig_termios.c_cc[VMIN] = 1;
+    orig_termios.c_cc[VMIN] = 0; /* instantaneous read */
     orig_termios.c_cc[VTIME] = 0;
     return tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
 }
