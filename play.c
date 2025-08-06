@@ -19,8 +19,7 @@ typedef struct {
     int left, right, top, bottom;
 } bounding_rect_t;
 
-static bounding_rect_t get_object_bounds(const object_t *obj);
-static bounding_rect_t get_player_bounds(const object_t *player_obj);
+static bounding_rect_t get_bounds(const object_t *obj, bool is_player);
 static bool bounds_overlap(const bounding_rect_t *rect1,
                            const bounding_rect_t *rect2);
 
@@ -210,15 +209,15 @@ static void spatial_collision_check_pair(object_t *obj1, object_t *obj2)
     /* Apply special duck adjustments for player vs non-ground-hole collisions
      */
     if (obj1 == &player && !involves_ground_hole(obj1, obj2)) {
-        bounds1 = get_player_bounds(obj1);
-        bounds2 = get_object_bounds(obj2);
+        bounds1 = get_bounds(obj1, true);
+        bounds2 = get_bounds(obj2, false);
     } else if (obj2 == &player && !involves_ground_hole(obj1, obj2)) {
-        bounds1 = get_object_bounds(obj1);
-        bounds2 = get_player_bounds(obj2);
+        bounds1 = get_bounds(obj1, false);
+        bounds2 = get_bounds(obj2, true);
     } else {
         /* Standard bounds for non-player or ground hole collisions */
-        bounds1 = get_object_bounds(obj1);
-        bounds2 = get_object_bounds(obj2);
+        bounds1 = get_bounds(obj1, false);
+        bounds2 = get_bounds(obj2, false);
     }
 
     /* Check for collision */
@@ -389,7 +388,14 @@ static void get_trex_color(short *r, short *g, short *b)
  *
  * Return bounding rectangle in world coordinates
  */
-static bounding_rect_t get_object_bounds(const object_t *obj)
+/**
+ * Get object bounding rectangle with optional player adjustments
+ * @obj : Object to get bounds for
+ * @is_player : If true, apply player-specific duck adjustments
+ *
+ * Return bounding rectangle, with duck adjustments if is_player and ducking
+ */
+static bounding_rect_t get_bounds(const object_t *obj, bool is_player)
 {
     bounding_rect_t bounds = {0};
     if (!obj)
@@ -400,21 +406,8 @@ static bounding_rect_t get_object_bounds(const object_t *obj)
     bounds.top = obj->y - obj->height + obj->bounding_box.y;
     bounds.bottom = bounds.top + obj->bounding_box.height;
 
-    return bounds;
-}
-
-/**
- * Get player bounding rectangle with duck state adjustments
- * @player_obj : Player object to get bounds for
- *
- * Return adjusted bounding rectangle for ducking player
- */
-static bounding_rect_t get_player_bounds(const object_t *player_obj)
-{
-    bounding_rect_t bounds = get_object_bounds(player_obj);
-
-    /* Apply duck adjustments if player is ducking */
-    if (player_obj->state == STATE_DUCK) {
+    /* Apply player-specific duck adjustments */
+    if (is_player && obj->state == STATE_DUCK) {
         bounds.top += 6;    /* Lower the top of hitbox */
         bounds.right += 10; /* Extend width for duck posture */
     }
@@ -734,21 +727,25 @@ void play_add_object(int x, int y, object_type_t type)
     }
 }
 
-/* Object initialization lookup table */
-static const struct {
-    int cols, rows, max_frames;
+/* Object initialization data structure */
+typedef struct {
+    const sprite_t *sprite;
+    int max_frames;
     int bbox_x, bbox_y, bbox_width, bbox_height;
     int y_adjust;
     bool enemy;
-} object_init_data[] = {
-    [OBJECT_TREX] = {22, 15, 3, 8, 0, 6, 13, 0, false},
-    [OBJECT_CACTUS] = {13, 8, 1, 1, -1, 10, 10, 0, true},
-    [OBJECT_ROCK] = {11, 3, 1, 2, 0, 6, 3, 0, true},
-    [OBJECT_EGG_INVINCIBLE] = {13, 6, 3, 2, 2, 8, 3, 0, false},
-    [OBJECT_EGG_FIRE] = {13, 6, 3, 2, 2, 8, 3, 0, false},
-    [OBJECT_PTERODACTYL] = {32, 12, 1, 16, 0, 1, 12, -12, true},
-    [OBJECT_GROUND_HOLE] = {21, 5, 1, 14, -3, 2, 15, 5, true},
-    [OBJECT_FIRE_BALL] = {2, 1, 1, 0, 0, 2, 1, 0, false},
+} object_init_t;
+
+/* Object initialization lookup table with sprite references */
+static const object_init_t object_init_data[] = {
+    [OBJECT_TREX] = {&sprite_trex_normal, 3, 8, 0, 6, 13, 0, false},
+    [OBJECT_CACTUS] = {&sprite_cactus, 1, 1, -1, 10, 10, 0, true},
+    [OBJECT_ROCK] = {&sprite_rock, 1, 2, 0, 6, 3, 0, true},
+    [OBJECT_EGG_INVINCIBLE] = {&sprite_egg, 3, 2, 2, 8, 3, 0, false},
+    [OBJECT_EGG_FIRE] = {&sprite_egg, 3, 2, 2, 8, 3, 0, false},
+    [OBJECT_PTERODACTYL] = {&sprite_pterodactyl, 1, 16, 0, 1, 12, -12, true},
+    [OBJECT_GROUND_HOLE] = {NULL, 1, 14, -3, 2, 15, 5, true},
+    [OBJECT_FIRE_BALL] = {NULL, 1, 0, 0, 2, 1, 0, false},
 };
 
 void play_init_object(object_t *object)
@@ -756,46 +753,31 @@ void play_init_object(object_t *object)
     if (!object || object->type < 0 || object->type > OBJECT_FIRE_BALL)
         return;
 
-    /* Set sprite dimensions based on type */
-    switch (object->type) {
-    case OBJECT_CACTUS:
-        object->cols = sprite_cactus.cols;
-        object->rows = sprite_cactus.rows;
-        break;
-    case OBJECT_ROCK:
-        object->cols = sprite_rock.cols;
-        object->rows = sprite_rock.rows;
-        break;
-    case OBJECT_EGG_INVINCIBLE:
-    case OBJECT_EGG_FIRE:
-        object->cols = sprite_egg.cols;
-        object->rows = sprite_egg.rows;
-        break;
-    case OBJECT_PTERODACTYL:
-        object->cols = sprite_pterodactyl.cols;
-        object->rows = sprite_pterodactyl.rows;
-        object->y -= sprite_pterodactyl.rows;
-        break;
-    default:
-        object->cols = object_init_data[object->type].cols;
-        object->rows = object_init_data[object->type].rows;
-        break;
+    const object_init_t *data = &object_init_data[object->type];
+
+    /* Set sprite dimensions */
+    if (data->sprite) {
+        object->cols = data->sprite->cols;
+        object->rows = data->sprite->rows;
+    } else {
+        /* Ground hole and fireball have hardcoded dimensions */
+        object->cols = (object->type == OBJECT_GROUND_HOLE) ? 21 : 2;
+        object->rows = (object->type == OBJECT_GROUND_HOLE) ? 5 : 1;
     }
 
     object->height = HEIGHT_ZERO;
-    object->max_frames = object_init_data[object->type].max_frames;
-    object->enemy = object_init_data[object->type].enemy;
-    object->y += object_init_data[object->type].y_adjust;
+    object->max_frames = data->max_frames;
+    object->enemy = data->enemy;
+    object->y += data->y_adjust;
 
     /* Set bounding box */
-    object->bounding_box.x = object_init_data[object->type].bbox_x;
-    object->bounding_box.y = object_init_data[object->type].bbox_y;
-    object->bounding_box.width = object_init_data[object->type].bbox_width;
-    object->bounding_box.height = object_init_data[object->type].bbox_height;
+    object->bounding_box.x = data->bbox_x;
+    object->bounding_box.y = data->bbox_y;
+    object->bounding_box.width = data->bbox_width;
+    object->bounding_box.height = data->bbox_height;
 
     /* Final y adjustment */
-    if (object->type != OBJECT_PTERODACTYL)
-        object->y -= object->rows;
+    object->y -= object->rows;
 }
 
 void play_kill_player()

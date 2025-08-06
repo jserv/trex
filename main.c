@@ -7,6 +7,9 @@ int main()
     /* Get configuration */
     const game_config_t *cfg = ensure_cfg();
 
+    /* Initialize sprites */
+    sprites_init();
+
     /* Initialize TUI */
     tui_init();
     tui_raw();

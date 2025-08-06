@@ -468,6 +468,9 @@ void state_handle_input(int key_code);
 void state_quit_game();
 bool state_is_running();
 
+/* Initialize sprite data */
+void sprites_init(void);
+
 /* Convenience macros */
 #define RESOLUTION_ROWS (state_get_resolution(0))
 #define RESOLUTION_COLS (state_get_resolution(1))
