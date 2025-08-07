@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
@@ -20,10 +21,13 @@ static void apply_attributes(int attr);
 static int safe_full_write(int fd, const void *buf, size_t count);
 static int allocate_buffers(void);
 static void init_hierarchical_dirty_tracking(int screen_cols, int screen_rows);
+static void init_back_buffer(size_t rows, size_t cols);
+static void free_back_buffer(void);
+static bool back_buffer_row_changed(int row);
 
 tui_window_t *tui_stdscr = NULL;
-int tui_lines = 0;
-int tui_cols = 0;
+static int tui_lines = 0;
+static int tui_cols = 0;
 
 static struct termios orig_termios, saved_termios;
 static int term_initialized = 0, cursor_visibility = 1, colors_initialized = 0;
@@ -80,6 +84,19 @@ static struct {
     uint64_t fallback_writes;
     uint64_t partial_writes;
 } writev_stats = {0};
+
+/* Back-buffer system for frame differencing optimization */
+typedef struct {
+    uint16_t *glyph_indices; /* Compact glyph representation */
+    bool *row_dirty_flags;   /* Per-row change tracking */
+    size_t rows, cols;
+    uint64_t row_comparisons; /* Stats: row comparison operations */
+    uint64_t rows_compared;   /* Stats: total rows compared */
+    uint64_t rows_changed;    /* Stats: rows with changes */
+    uint64_t cells_skipped;   /* cells skipped due to row-level optimization */
+} back_buffer_t;
+
+static back_buffer_t back_buffer = {0};
 
 /* Fallback buffering for compatibility */
 #define OUTPUT_BUFFER_SIZE 8192
@@ -1608,6 +1625,9 @@ static void scan_l1_tile(int tile_row,
                 x++;
             }
         }
+
+        /* Update back-buffer tracking for this row */
+        back_buffer_row_changed(y);
     }
 }
 
@@ -1849,6 +1869,10 @@ static void free_buffers(void)
         free(prev_attr_buf);
         prev_attr_buf = NULL;
     }
+
+    /* Free back-buffer system */
+    free_back_buffer();
+
     buf_rows = 0;
     buf_cols = 0;
 }
@@ -1887,7 +1911,102 @@ static int allocate_buffers(void)
                buf_cols * sizeof(int)); /* Initialize to invalid attrs */
     }
 
+    /* Initialize back-buffer system */
+    init_back_buffer(buf_rows, buf_cols);
+
     return 0;
+}
+
+/* Back-buffer system implementation */
+static void init_back_buffer(size_t rows, size_t cols)
+{
+    free_back_buffer();
+
+    back_buffer.rows = rows;
+    back_buffer.cols = cols;
+
+    back_buffer.glyph_indices = calloc(rows * cols, sizeof(uint16_t));
+    back_buffer.row_dirty_flags = calloc(rows, sizeof(bool));
+
+    /* Initialize with invalid data to force first frame update */
+    if (back_buffer.glyph_indices)
+        memset(back_buffer.glyph_indices, 0xFF, rows * cols * sizeof(uint16_t));
+
+    /* Reset stats */
+    back_buffer.row_comparisons = 0;
+    back_buffer.rows_compared = 0;
+    back_buffer.rows_changed = 0;
+    back_buffer.cells_skipped = 0;
+}
+
+static void free_back_buffer(void)
+{
+    if (back_buffer.glyph_indices) {
+        free(back_buffer.glyph_indices);
+        back_buffer.glyph_indices = NULL;
+    }
+    if (back_buffer.row_dirty_flags) {
+        free(back_buffer.row_dirty_flags);
+        back_buffer.row_dirty_flags = NULL;
+    }
+    back_buffer.rows = back_buffer.cols = 0;
+}
+
+/* Convert character and attribute to compact glyph index */
+static inline uint16_t char_to_glyph_index(char c, int attr)
+{
+    /* Pack 8-bit char + 8-bit simplified attr into 16 bits */
+    uint8_t simplified_attr = (attr & 0xFF); /* Take low 8 bits */
+    return ((uint16_t) (unsigned char) c) | (((uint16_t) simplified_attr) << 8);
+}
+
+/* Check if a row has changed using memcmp on glyph indices */
+static bool back_buffer_row_changed(int row)
+{
+    if (!back_buffer.glyph_indices || row >= (int) back_buffer.rows ||
+        row >= buf_rows || !screen_buf || !attr_buf) {
+        return true; /* Assume changed if not initialized */
+    }
+
+    back_buffer.row_comparisons++;
+    back_buffer.rows_compared++;
+
+    /* Get pointer to back-buffer row */
+    uint16_t *back_row = &back_buffer.glyph_indices[row * back_buffer.cols];
+
+    /* Compare row directly using character and attribute buffers */
+    bool changed = false;
+    size_t effective_cols = (back_buffer.cols < (size_t) buf_cols)
+                                ? back_buffer.cols
+                                : (size_t) buf_cols;
+
+    for (size_t col = 0; col < effective_cols; col++) {
+        uint16_t current_glyph =
+            char_to_glyph_index(screen_buf[row][col], attr_buf[row][col]);
+        if (current_glyph != back_row[col]) {
+            changed = true;
+            back_row[col] = current_glyph; /* Update as we go */
+        }
+    }
+
+    /* Handle any extra columns beyond buffer width */
+    for (size_t col = effective_cols; col < back_buffer.cols; col++) {
+        uint16_t space_glyph = char_to_glyph_index(' ', 0);
+        if (space_glyph != back_row[col]) {
+            changed = true;
+            back_row[col] = space_glyph;
+        }
+    }
+
+    if (changed) {
+        back_buffer.rows_changed++;
+        back_buffer.row_dirty_flags[row] = true;
+    } else {
+        back_buffer.cells_skipped += back_buffer.cols;
+        back_buffer.row_dirty_flags[row] = false;
+    }
+
+    return changed;
 }
 
 /* Test if writev is available and functional */

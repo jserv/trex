@@ -89,5 +89,3 @@ struct tui_window_t {
 
 /* External variables */
 extern tui_window_t *tui_stdscr;
-extern int tui_lines;
-extern int tui_cols;
