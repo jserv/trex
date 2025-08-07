@@ -39,6 +39,12 @@ static object_type_t powerup_type;
 static double last_key_check_time = 0.0;
 static object_t player;
 
+/* Streak counter for consecutive aerial obstacle clears */
+static int aerial_streak = 0;
+static int max_streak = 0;
+static bool was_airborne_last_frame = false;
+static bool cleared_obstacle_while_airborne = false;
+
 /* Jump buffer and coyote time state */
 static double last_jump_keydown = 0.0;
 static double left_ground_at = 0.0;
@@ -835,6 +841,12 @@ void play_init_world()
     last_jump_keydown = 0.0;
     left_ground_at = 0.0;
 
+    /* Reset streak counters */
+    aerial_streak = 0;
+    max_streak = 0;
+    was_airborne_last_frame = false;
+    cleared_obstacle_while_airborne = false;
+
     /* Initialize the player again */
     play_init_object(&player);
 }
@@ -1001,24 +1013,63 @@ void play_update_world(double elapsed)
                     }
                 }
 
-                /* Clean up objects that have moved off-screen */
+                /* Track if player is airborne this frame */
+                bool is_airborne = (player.state == STATE_JUMPING ||
+                                    player.state == STATE_FALLING);
+
+                /* Process objects for scoring and cleanup */
                 for (int i = 0; i < cfg->limits.max_objects; ++i) {
                     object_t *object = objects[i];
-                    if (object) {
-                        /* Has object passed the player and left the screen? */
-                        if (object->x + object->cols < 0 ||
-                            (object->type == OBJECT_FIRE_BALL &&
-                             object->x > RESOLUTION_COLS)) {
-                            /* Delete the object */
-                            free(object);
-                            objects[i] = NULL;
+                    if (!object)
+                        continue;
 
-                            const level_config_t *level =
-                                config_get_level(current_level + 1);
-                            user_score += level->level;
+                    /* Check if enemy obstacle just cleared the player */
+                    bool just_passed = object->enemy &&
+                                       object->x + object->cols < player.x &&
+                                       object->x + object->cols >= player.x - 2;
+
+                    if (just_passed && is_airborne) {
+                        /* Player cleared obstacle while airborne */
+                        cleared_obstacle_while_airborne = true;
+
+                        /* Award streak bonus points */
+                        if (aerial_streak > 0) {
+                            int multiplier = aerial_streak + 1;
+                            user_score += 10 * multiplier;
                         }
                     }
+
+                    /* Remove objects that left the screen */
+                    bool off_screen = object->x + object->cols < 0 ||
+                                      (object->type == OBJECT_FIRE_BALL &&
+                                       object->x > RESOLUTION_COLS);
+
+                    if (off_screen) {
+                        free(object);
+                        objects[i] = NULL;
+
+                        const level_config_t *level =
+                            config_get_level(current_level + 1);
+                        user_score += level->level;
+                    }
                 }
+
+                /* Update streak based on landing/airborne state */
+                if (was_airborne_last_frame && !is_airborne) {
+                    /* Just landed */
+                    if (cleared_obstacle_while_airborne) {
+                        /* Successfully cleared obstacle(s) while airborne */
+                        aerial_streak++;
+                        if (aerial_streak > max_streak)
+                            max_streak = aerial_streak;
+                        cleared_obstacle_while_airborne = false;
+                    } else if (aerial_streak > 0) {
+                        /* Landed without clearing an obstacle - reset streak */
+                        aerial_streak = 0;
+                    }
+                }
+
+                was_airborne_last_frame = is_airborne;
             }
         }
 
@@ -1129,6 +1180,23 @@ void play_render_world()
         snprintf(sz_text, sizeof(sz_text), "%d", user_score);
         draw_render_colored_text(RESOLUTION_COLS - 8, 2, sz_text, TUI_A_BOLD, 0,
                                  255, 0);
+
+        /* Draw streak counter if active */
+        if (aerial_streak > 0) {
+            snprintf(sz_text, sizeof(sz_text), "Streak: %dx",
+                     aerial_streak + 1);
+            /* Gold color for streak */
+            draw_render_colored_text(RESOLUTION_COLS - 20, 4, sz_text,
+                                     TUI_A_BOLD, 255, 215, 0);
+        }
+
+        /* Draw max streak */
+        if (max_streak > 0) {
+            snprintf(sz_text, sizeof(sz_text), "Max: %dx", max_streak + 1);
+            /* Gray for max streak */
+            draw_render_colored_text(RESOLUTION_COLS - 20, 5, sz_text, 0, 200,
+                                     200, 200);
+        }
 
         memset(sz_text, 0, 128);
         int level_len =
