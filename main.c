@@ -1,3 +1,4 @@
+#include <poll.h>
 #include <unistd.h>
 
 #include "trex.h"
@@ -44,8 +45,15 @@ int main()
 
         /* Only update and render at target frame rate */
         if (accumulator >= cfg->timing.frame_time) {
-            /* When a key is pressed */
-            state_handle_input(tui_getch());
+            /* Process all available input events to reduce latency.
+             * This prevents input lag when multiple keys are pressed quickly
+             */
+            int max_inputs = 8; /* Process up to 8 inputs per frame */
+            while (max_inputs-- > 0 && tui_has_input()) {
+                int ch = tui_getch();
+                if (ch != -1)
+                    state_handle_input(ch);
+            }
 
             /* Update the game */
             state_update_frame();
@@ -55,8 +63,13 @@ int main()
 
             accumulator -= cfg->timing.frame_time;
         } else {
-            /* Small sleep to avoid busy waiting */
-            usleep(cfg->timing.sleep_us); /* Sleep time from config */
+            /* Use poll() with 4ms timeout for low-latency input polling.
+             * This matches the optimized tui_getch() implementation
+             */
+            struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
+
+            /* 4ms timeout for optimal latency vs CPU trade-off */
+            poll(&pfd, 1, 4);
         }
     }
 

@@ -2799,9 +2799,18 @@ int tui_getch(void)
     if (!tui_stdscr)
         return -1;
 
+    /* Use poll() with 4ms timeout for low-latency input polling
+     * as recommended by Dan Luu's terminal latency research.
+     * This reduces input latency without pegging a CPU core. */
     if (tui_stdscr->delay >= 0) {
         struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
-        if (poll(&pfd, 1, tui_stdscr->delay) <= 0)
+
+        /* 4ms timeout for optimal latency vs CPU trade-off
+         * When nodelay is set (delay=0), use 4ms polling
+         * Otherwise use the configured delay in milliseconds */
+        int timeout_ms = (tui_stdscr->delay == 0) ? 4 : tui_stdscr->delay;
+
+        if (poll(&pfd, 1, timeout_ms) <= 0)
             return -1;
     }
 
@@ -2816,6 +2825,18 @@ int tui_getch(void)
         return TUI_KEY_ENTER;
 
     return ch;
+}
+
+bool tui_has_input(void)
+{
+    if (!tui_stdscr)
+        return false;
+
+    /* Check if input is available using poll() with zero timeout */
+    struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
+
+    /* Zero timeout for non-blocking check */
+    return poll(&pfd, 1, 0) > 0;
 }
 
 int tui_set_nodelay(tui_window_t *win, bool bf)

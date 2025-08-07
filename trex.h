@@ -114,6 +114,7 @@ int tui_init_color(short color, short r, short g, short b);
 
 /* Character input */
 int tui_getch(void);
+bool tui_has_input(void);
 
 /* Terminal control */
 int tui_noraw(void);
