@@ -43,6 +43,11 @@ static object_t player;
 static double last_jump_keydown = 0.0;
 static double left_ground_at = 0.0;
 
+/* Fast-fall state */
+static bool is_fast_falling = false;
+static double fast_fall_multiplier = 2.5;
+static double last_fast_fall_time = 0.0;
+
 /*
  * Spatial collision detection optimization system
  *
@@ -514,6 +519,7 @@ static void try_jump(void)
         player.state = STATE_JUMPING;
         player.frame = 0;
         last_jump_keydown = 0.0;
+        is_fast_falling = false; /* Reset fast-fall when starting new jump */
     }
 }
 
@@ -881,6 +887,14 @@ void play_update_world(double elapsed)
         /* Try to execute any buffered or coyote time jumps */
         try_jump();
 
+        /* Check if fast-fall should be disabled (key timeout) */
+        if (is_fast_falling &&
+            (player.state == STATE_JUMPING || player.state == STATE_FALLING)) {
+            /* Stop fast-falling if key hasn't been pressed recently */
+            if (TICKCOUNT - last_fast_fall_time > 50) /* 50ms timeout */
+                is_fast_falling = false;
+        }
+
         /* Check if the player is still pressing the key to duck */
         if (player.state == STATE_DUCK) {
             /* If still pressing, set state as ducking, otherwise as running */
@@ -920,7 +934,10 @@ void play_update_world(double elapsed)
                 if (player.height > cfg->physics.jump_height)
                     player.state = STATE_FALLING;
             } else if (player.state == STATE_FALLING) {
-                player.height -= 1;
+                /* Apply fast-fall multiplier if holding down */
+                int fall_speed =
+                    is_fast_falling ? (int) (1 * fast_fall_multiplier) : 1;
+                player.height -= fall_speed;
 
                 /* If reached the ground, change to running animation and reset
                  * variables
@@ -929,6 +946,7 @@ void play_update_world(double elapsed)
                     player.state = STATE_RUNNING;
                     player.frame = 0;
                     player.height = 0;
+                    is_fast_falling = false; /* Reset fast-fall on landing */
                 } else if (is_falling_animation &&
                            player.height <
                                cfg->physics.fall_depth - player.rows)
@@ -1135,9 +1153,18 @@ void play_handle_input(int key_code)
                 powerup_type == OBJECT_EGG_FIRE)
                 play_add_object(player.x + 5, player.y + 10, OBJECT_FIRE_BALL);
 
-            /* Check if the player is not already jumping or falling */
-            if (player.state != STATE_JUMPING &&
-                player.state != STATE_FALLING) {
+            /* Handle fast-fall when airborne, or duck when grounded */
+            if (player.state == STATE_JUMPING ||
+                player.state == STATE_FALLING) {
+                /* Enable fast-fall when down is pressed while airborne */
+                is_fast_falling = true;
+                last_fast_fall_time = TICKCOUNT;
+                if (player.state == STATE_JUMPING) {
+                    /* Immediately transition to falling if jumping */
+                    player.state = STATE_FALLING;
+                }
+            } else {
+                /* Duck when on ground */
                 last_key_check_time = TICKCOUNT;
                 player.state = STATE_DUCK;
             }
