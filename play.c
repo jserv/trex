@@ -529,81 +529,107 @@ static void try_jump(void)
     }
 }
 
-/**
- * Renders a game object to the screen with appropriate colors and animations
- * @object : Pointer to the object to render (must not be NULL)
- */
+/* Helper function to render T-Rex object */
+static void render_trex(const object_t *object)
+{
+    /* Get appropriate T-Rex color based on game state */
+    short s_color_r, s_color_g, s_color_b;
+    get_trex_color(&s_color_r, &s_color_g, &s_color_b);
+
+    /* Select appropriate sprite based on state */
+    const sprite_t *sprite =
+        (object->state == STATE_DUCK) ? &sprite_trex_duck : &sprite_trex_normal;
+
+    /* Draw T-Rex using sprite data */
+    for (int i = 0; i < sprite->rows; i++) {
+        for (int j = 0; j < sprite->cols; j++) {
+            if (!sprite_get_pixel(sprite, i, j))
+                continue;
+
+            draw_render_colored_block(object->x + j,
+                                      object->y + i - object->height, 1, 1,
+                                      s_color_r, s_color_g, s_color_b);
+        }
+    }
+
+    /* Skip leg animation if ducking or not animated */
+    if (object->state == STATE_DUCK || object->frame == 0)
+        return;
+
+    /* Clear leg area for animation */
+    draw_render_colored_block(object->x + 4, object->y + 12 - object->height, 8,
+                              3, 0, 0, 0);
+
+    /* Draw animated legs based on frame */
+    if (object->frame == 1) {
+        /* Left leg raised */
+        draw_render_colored_block(object->x + 4,
+                                  object->y + 12 - object->height, 2, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 10,
+                                  object->y + 12 - object->height, 1, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 5,
+                                  object->y + 13 - object->height, 3, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 10,
+                                  object->y + 13 - object->height, 1, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 10,
+                                  object->y + 14 - object->height, 2, 1,
+                                  s_color_r, s_color_g, s_color_b);
+    } else if (object->frame == 2) {
+        /* Right leg raised */
+        draw_render_colored_block(object->x + 4,
+                                  object->y + 12 - object->height, 2, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 10,
+                                  object->y + 12 - object->height, 1, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 4,
+                                  object->y + 13 - object->height, 1, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 10,
+                                  object->y + 13 - object->height, 3, 1,
+                                  s_color_r, s_color_g, s_color_b);
+        draw_render_colored_block(object->x + 4,
+                                  object->y + 14 - object->height, 2, 1,
+                                  s_color_r, s_color_g, s_color_b);
+    }
+}
+
+/* Helper function to render sprite-based objects */
+static void render_sprite_object(const object_t *object,
+                                 const sprite_t *sprite,
+                                 short r,
+                                 short g,
+                                 short b)
+{
+    for (int i = 0; i < object->rows; ++i) {
+        for (int j = 0; j < object->cols; ++j) {
+            if (!sprite_get_pixel(sprite, i, j))
+                continue;
+
+            draw_render_colored_block(
+                object->x + j, object->y + i - object->height, 1, 1, r, g, b);
+        }
+    }
+}
+
 void play_render_object(object_t const *object)
 {
     if (!object)
         return;
 
     const game_config_t *cfg = ensure_cfg();
+
+    /* Handle T-Rex rendering */
     if (object->type == OBJECT_TREX) {
-        /* Get appropriate T-Rex color based on game state */
-        short s_color_r, s_color_g, s_color_b;
-        get_trex_color(&s_color_r, &s_color_g, &s_color_b);
-
-        /* Select appropriate sprite based on state */
-        const sprite_t *sprite = (object->state == STATE_DUCK)
-                                     ? &sprite_trex_duck
-                                     : &sprite_trex_normal;
-
-        /* Draw T-Rex using sprite data */
-        for (int i = 0; i < sprite->rows; i++) {
-            for (int j = 0; j < sprite->cols; j++) {
-                if (sprite_get_pixel(sprite, i, j)) {
-                    draw_render_colored_block(
-                        object->x + j, object->y + i - object->height, 1, 1,
-                        s_color_r, s_color_g, s_color_b);
-                }
-            }
-        }
-
-        /* Handle leg animation for running state */
-        if (object->state != STATE_DUCK && object->frame > 0) {
-            /* Clear leg area for animation */
-            draw_render_colored_block(
-                object->x + 4, object->y + 12 - object->height, 8, 3, 0, 0, 0);
-
-            /* Draw animated legs based on frame */
-            if (object->frame == 1) {
-                /* Left leg raised */
-                draw_render_colored_block(object->x + 4,
-                                          object->y + 12 - object->height, 2, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 10,
-                                          object->y + 12 - object->height, 1, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 5,
-                                          object->y + 13 - object->height, 3, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 10,
-                                          object->y + 13 - object->height, 1, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 10,
-                                          object->y + 14 - object->height, 2, 1,
-                                          s_color_r, s_color_g, s_color_b);
-            } else if (object->frame == 2) {
-                /* Right leg raised */
-                draw_render_colored_block(object->x + 4,
-                                          object->y + 12 - object->height, 2, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 10,
-                                          object->y + 12 - object->height, 1, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 4,
-                                          object->y + 13 - object->height, 1, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 10,
-                                          object->y + 13 - object->height, 3, 1,
-                                          s_color_r, s_color_g, s_color_b);
-                draw_render_colored_block(object->x + 4,
-                                          object->y + 14 - object->height, 2, 1,
-                                          s_color_r, s_color_g, s_color_b);
-            }
-        }
+        render_trex(object);
+        return;
     }
+
+    /* Handle ground hole rendering */
     if (object->type == OBJECT_GROUND_HOLE) {
         draw_render_block(object->x, object->y - object->height, object->cols,
                           object->rows, TUI_COLOR_PAIR(1));
@@ -613,96 +639,80 @@ void play_render_object(object_t const *object)
         draw_render_colored_block(
             object->x + object->cols, object->y - object->height, 2, 5,
             is_dead ? 178 : 182, is_dead ? 178 : 122, is_dead ? 178 : 87);
+        return;
     }
+
+    /* Handle fireball rendering */
     if (object->type == OBJECT_FIRE_BALL) {
         draw_render_colored_block(object->x, object->y - object->height, 2, 1,
                                   is_dead ? 178 : 182, is_dead ? 178 : 122,
                                   is_dead ? 178 : 87);
-    } else {
-        /* Draw other objects based on their matrix */
-        for (int i = 0; i < object->rows; ++i) {
-            /* Draw the matrix columns */
-            for (int j = 0; j < object->cols; ++j) {
-                if (object->type == OBJECT_CACTUS) {
-                    /* Cactus color */
-                    short s_color_r = cfg->colors.cactus.r,
-                          s_color_g = cfg->colors.cactus.g,
-                          s_color_b = cfg->colors.cactus.b;
-
-                    /* If the player died, leave in grayscale */
-                    if (is_dead)
-                        s_color_r = 130, s_color_g = 130, s_color_b = 130;
-
-                    if (sprite_get_pixel(&sprite_cactus, i, j))
-                        draw_render_colored_block(
-                            object->x + j, object->y + i - object->height, 1, 1,
-                            s_color_r, s_color_g, s_color_b);
-                } else if (object->type == OBJECT_ROCK) {
-                    /* Rock color */
-                    if (sprite_get_pixel(&sprite_rock, i, j)) {
-                        short s_color_r = cfg->colors.rock.r,
-                              s_color_g = cfg->colors.rock.g,
-                              s_color_b = cfg->colors.rock.b;
-                        draw_render_colored_block(
-                            object->x + j, object->y + i - object->height, 1, 1,
-                            s_color_r, s_color_g, s_color_b);
-                    }
-                } else if (object->type == OBJECT_EGG_INVINCIBLE) {
-                    /* Egg color */
-                    short s_color_r = cfg->colors.egg_base.r,
-                          s_color_g = cfg->colors.egg_base.g,
-                          s_color_b = cfg->colors.egg_base.b;
-
-                    if (object->frame == 1)
-                        s_color_r = 234, s_color_g = 227, s_color_b = 170;
-                    else if (object->frame == 2)
-                        s_color_r = 234, s_color_g = 212, s_color_b = 64;
-
-                    /* If the player died, leave in grayscale */
-                    if (is_dead)
-                        s_color_r = 170, s_color_g = 170, s_color_b = 170;
-
-                    if (sprite_get_pixel(&sprite_egg, i, j))
-                        draw_render_colored_block(
-                            object->x + j, object->y + i - object->height, 1, 1,
-                            s_color_r, s_color_g, s_color_b);
-                } else if (object->type == OBJECT_EGG_FIRE) {
-                    /* Egg color */
-                    short s_color_r = cfg->colors.egg_base.r,
-                          s_color_g = cfg->colors.egg_base.g,
-                          s_color_b = cfg->colors.egg_base.b;
-
-                    if (object->frame == 1)
-                        s_color_r = 255, s_color_g = 170, s_color_b = 80;
-                    else if (object->frame == 2)
-                        s_color_r = 200, s_color_g = 65, s_color_b = 40;
-
-                    /* If the player died, leave in grayscale */
-                    if (is_dead)
-                        s_color_r = 170, s_color_g = 170, s_color_b = 170;
-
-                    if (sprite_get_pixel(&sprite_egg, i, j))
-                        draw_render_colored_block(
-                            object->x + j, object->y + i - object->height, 1, 1,
-                            s_color_r, s_color_g, s_color_b);
-                } else if (object->type == OBJECT_PTERODACTYL) {
-                    /* Pterodactyl color */
-                    short s_color_r = cfg->colors.pterodactyl.r,
-                          s_color_g = cfg->colors.pterodactyl.g,
-                          s_color_b = cfg->colors.pterodactyl.b;
-
-                    /* If the player died, leave in grayscale */
-                    if (is_dead)
-                        s_color_r = 90, s_color_g = 90, s_color_b = 90;
-
-                    if (sprite_get_pixel(&sprite_pterodactyl, i, j))
-                        draw_render_colored_block(
-                            object->x + j, object->y + i - object->height, 1, 1,
-                            s_color_r, s_color_g, s_color_b);
-                }
-            }
-        }
+        return;
     }
+
+    /* Handle sprite-based objects */
+    short r, g, b;
+    const sprite_t *sprite = NULL;
+
+    switch (object->type) {
+    case OBJECT_CACTUS:
+        r = is_dead ? 130 : cfg->colors.cactus.r;
+        g = is_dead ? 130 : cfg->colors.cactus.g;
+        b = is_dead ? 130 : cfg->colors.cactus.b;
+        sprite = &sprite_cactus;
+        break;
+
+    case OBJECT_ROCK:
+        r = cfg->colors.rock.r;
+        g = cfg->colors.rock.g;
+        b = cfg->colors.rock.b;
+        sprite = &sprite_rock;
+        break;
+
+    case OBJECT_EGG_INVINCIBLE:
+        r = cfg->colors.egg_base.r;
+        g = cfg->colors.egg_base.g;
+        b = cfg->colors.egg_base.b;
+        if (object->frame == 1) {
+            r = 234, g = 227, b = 170;
+        } else if (object->frame == 2) {
+            r = 234, g = 212, b = 64;
+        }
+        if (is_dead) {
+            r = 170, g = 170, b = 170;
+        }
+        sprite = &sprite_egg;
+        break;
+
+    case OBJECT_EGG_FIRE:
+        r = cfg->colors.egg_base.r;
+        g = cfg->colors.egg_base.g;
+        b = cfg->colors.egg_base.b;
+        if (object->frame == 1) {
+            r = 255, g = 170, b = 80;
+        } else if (object->frame == 2) {
+            r = 200, g = 65, b = 40;
+        }
+        if (is_dead) {
+            r = 170, g = 170, b = 170;
+        }
+        sprite = &sprite_egg;
+        break;
+
+    case OBJECT_PTERODACTYL:
+        r = is_dead ? 90 : cfg->colors.pterodactyl.r;
+        g = is_dead ? 90 : cfg->colors.pterodactyl.g;
+        b = is_dead ? 90 : cfg->colors.pterodactyl.b;
+        sprite = &sprite_pterodactyl;
+        break;
+
+    default:
+        return;
+    }
+
+    /* Render the sprite if found */
+    if (sprite)
+        render_sprite_object(object, sprite, r, g, b);
 }
 
 /**

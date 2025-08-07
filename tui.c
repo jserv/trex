@@ -3292,44 +3292,52 @@ int tui_refresh(tui_window_t *win)
                     int l2_start_col_px = l2_col * TILE_L2_SIZE;
                     int l2_end_col_px = l2_start_col_px + TILE_L2_SIZE - 1;
 
-                    if (l2_end_row_px >= scan_min_row &&
-                        l2_start_row_px <= scan_max_row &&
-                        l2_end_col_px >= scan_min_col &&
-                        l2_start_col_px <= scan_max_col) {
-                        /* Sparse L1 scanning within this L2 block */
-                        dirty_tile_t *current_l1 = dirty_l1_tiles;
-                        while (current_l1) {
-                            int l1_row = current_l1->row;
-                            int l1_col = current_l1->col;
+                    /* Skip L2 blocks outside scan region */
+                    if (l2_end_row_px < scan_min_row ||
+                        l2_start_row_px > scan_max_row ||
+                        l2_end_col_px < scan_min_col ||
+                        l2_start_col_px > scan_max_col) {
+                        current_l2 = current_l2->next;
+                        continue;
+                    }
 
-                            /* Check if L1 tile is within this L2 block */
-                            int l1_l2_row =
-                                l1_row / (TILE_L2_SIZE / TILE_L1_SIZE);
-                            int l1_l2_col =
-                                l1_col / (TILE_L2_SIZE / TILE_L1_SIZE);
+                    /* Sparse L1 scanning within this L2 block */
+                    dirty_tile_t *current_l1 = dirty_l1_tiles;
+                    while (current_l1) {
+                        int l1_row = current_l1->row;
+                        int l1_col = current_l1->col;
 
-                            if (l1_l2_row == l2_row && l1_l2_col == l2_col) {
-                                /* Check if L1 tile intersects with scan reg */
-                                int l1_start_row_px = l1_row * TILE_L1_SIZE;
-                                int l1_end_row_px =
-                                    l1_start_row_px + TILE_L1_SIZE - 1;
-                                int l1_start_col_px = l1_col * TILE_L1_SIZE;
-                                int l1_end_col_px =
-                                    l1_start_col_px + TILE_L1_SIZE - 1;
+                        /* Check if L1 tile is within this L2 block */
+                        int l1_l2_row = l1_row / (TILE_L2_SIZE / TILE_L1_SIZE);
+                        int l1_l2_col = l1_col / (TILE_L2_SIZE / TILE_L1_SIZE);
 
-                                if (l1_end_row_px >= scan_min_row &&
-                                    l1_start_row_px <= scan_max_row &&
-                                    l1_end_col_px >= scan_min_col &&
-                                    l1_start_col_px <= scan_max_col) {
-                                    /* Scan this L1 tile */
-                                    scan_l1_tile(l1_row, l1_col, buf_rows,
-                                                 buf_cols, scan_min_row,
-                                                 scan_max_row, scan_min_col,
-                                                 scan_max_col, &has_changes);
-                                }
-                            }
+                        /* Skip L1 tiles not in this L2 block */
+                        if (l1_l2_row != l2_row || l1_l2_col != l2_col) {
                             current_l1 = current_l1->next;
+                            continue;
                         }
+
+                        /* Check if L1 tile intersects with scan region */
+                        int l1_start_row_px = l1_row * TILE_L1_SIZE;
+                        int l1_end_row_px = l1_start_row_px + TILE_L1_SIZE - 1;
+                        int l1_start_col_px = l1_col * TILE_L1_SIZE;
+                        int l1_end_col_px = l1_start_col_px + TILE_L1_SIZE - 1;
+
+                        /* Skip L1 tiles outside scan region */
+                        if (l1_end_row_px < scan_min_row ||
+                            l1_start_row_px > scan_max_row ||
+                            l1_end_col_px < scan_min_col ||
+                            l1_start_col_px > scan_max_col) {
+                            current_l1 = current_l1->next;
+                            continue;
+                        }
+
+                        /* Scan this L1 tile */
+                        scan_l1_tile(l1_row, l1_col, buf_rows, buf_cols,
+                                     scan_min_row, scan_max_row, scan_min_col,
+                                     scan_max_col, &has_changes);
+
+                        current_l1 = current_l1->next;
                     }
                     current_l2 = current_l2->next;
                 }
