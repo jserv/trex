@@ -34,6 +34,7 @@ extern tui_window_t *tui_curscr;
 #define TUI_KEY_ENTER 0x10C
 #define TUI_KEY_F0 264
 #define TUI_KEY_MAX 400
+#define TUI_KEY_ESC 27
 
 /* Function key macros */
 #define TUI_KEY_F(n) (TUI_KEY_F0 + (n))

@@ -125,7 +125,7 @@ void menu_render()
     draw_render_colored_text(content_x + 2, controls_y + 2, "Crouch: DOWN", 0,
                              cfg->colors.menu_help.r, cfg->colors.menu_help.g,
                              cfg->colors.menu_help.b);
-    draw_render_colored_text(content_x + 2, controls_y + 3, "Quit: Q", 0,
+    draw_render_colored_text(content_x + 2, controls_y + 3, "Quit: ESC or Q", 0,
                              cfg->colors.menu_help.r, cfg->colors.menu_help.g,
                              cfg->colors.menu_help.b);
 
