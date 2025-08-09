@@ -2768,14 +2768,14 @@ static int parse_escape_sequence(void)
     struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
 
     if (poll(&pfd, 1, 50) <= 0)
-        return 27;
+        return TUI_KEY_ESC;
 
     if (read(STDIN_FILENO, &ch, 1) != 1)
-        return 27;
+        return TUI_KEY_ESC;
 
     if (ch == '[') {
         if (read(STDIN_FILENO, &ch, 1) != 1)
-            return 27;
+            return TUI_KEY_ESC;
 
         switch (ch) {
         case 'A':
@@ -2787,11 +2787,11 @@ static int parse_escape_sequence(void)
         case 'D':
             return TUI_KEY_LEFT;
         default:
-            return 27;
+            return TUI_KEY_ESC;
         }
     }
 
-    return 27;
+    return TUI_KEY_ESC;
 }
 
 int tui_getch(void)
@@ -2818,7 +2818,7 @@ int tui_getch(void)
     if (read(STDIN_FILENO, &ch, 1) != 1)
         return -1;
 
-    if (ch == 27 && tui_stdscr->keypad_mode)
+    if (ch == TUI_KEY_ESC && tui_stdscr->keypad_mode)
         return parse_escape_sequence();
 
     if (ch == '\r' || ch == '\n')
