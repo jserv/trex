@@ -26,7 +26,7 @@ TUI_DISABLE_WRITEV=1 ./trex     # Compatibility mode for older systems
 ### Controls
 - Space or Up Arrow: Jump over obstacles
 - Down Arrow: Duck under pterodactyls
-- ESC: Return to menu / Quit game
+- ESC or Q: Return to menu / Quit game
 
 ## Performance Optimizations
 This implementation includes several advanced optimizations for terminal rendering:
@@ -45,4 +45,4 @@ This implementation includes several advanced optimizations for terminal renderi
 
 ## License
 `trex` is available under a permissive MIT-style license.
-Use of this source code is governed by a MIT license that can be found in the [LICENSE](LICENSE) file. 
+Use of this source code is governed by a MIT license that can be found in the [LICENSE](LICENSE) file.

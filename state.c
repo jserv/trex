@@ -102,6 +102,7 @@ void state_handle_input(int key_code)
         switch (key_code) {
         case 'q':
         case 'Q':
+        case TUI_KEY_ESC:
             state_set_screen_type(SCREEN_MENU);
             break;
         }
