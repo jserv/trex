@@ -1250,7 +1250,7 @@ void play_handle_input(int key_code)
         default:
             break;
         }
-    } else if (is_dead && (key_code == ' ' || key_code == 10 ||
-                           key_code == TUI_KEY_UP || key_code == TUI_KEY_ENTER))
+    } else if (is_dead &&
+               (key_code == ' ' || key_code == 10 || key_code == TUI_KEY_ENTER))
         play_init_world();
 }
