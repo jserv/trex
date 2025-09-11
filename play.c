@@ -587,7 +587,9 @@ static void render_trex(const object_t *object)
 
     /* Draw animated legs */
     if (object->frame == 1 || object->frame == 2) {
+        /* clang-format off */
         const int (*rects)[4] = leg_frames[object->frame];
+        /* clang-format on */
         for (int i = 0; i < 5; i++) {
             draw_block_color(object->x + rects[i][0],
                              object->y + rects[i][1] - object->height,
