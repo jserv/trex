@@ -2914,8 +2914,7 @@ int tui_delwin(tui_window_t *win)
     if (!win)
         return -1;
 
-    if (win->dirty)
-        free(win->dirty);
+    free(win->dirty);
     free(win);
     return 0;
 }
