@@ -30,6 +30,16 @@ static bool bounds_overlap(const bounding_rect_t *rect1,
 #define JUMP_BUFFER_MS 120
 #define COYOTE_TIME_MS 80
 
+/* Duck hitbox adjustments */
+#define DUCK_HITBOX_TOP_OFFSET 6
+#define DUCK_HITBOX_RIGHT_EXTEND 10
+
+/* Fast fall mechanics */
+#define FAST_FALL_MULTIPLIER 2.5
+
+/* Off-screen position for removed objects */
+#define OFFSCREEN_X (RESOLUTION_COLS + 1)
+
 /* Game state variables */
 static int user_score = 0, distance = 0, current_level = 0;
 static float powerup_time = -1, obstacle_time = -1;
@@ -51,7 +61,7 @@ static double left_ground_at = 0.0;
 
 /* Fast-fall state */
 static bool is_fast_falling = false;
-static double fast_fall_multiplier = 2.5;
+static double fast_fall_multiplier = FAST_FALL_MULTIPLIER;
 static double last_fast_fall_time = 0.0;
 
 /*
@@ -239,14 +249,14 @@ static void spatial_collision_check_pair(object_t *obj1, object_t *obj2)
 
     /* Fireball vs enemy collisions */
     if (obj1->type == OBJECT_FIRE_BALL && obj2->type < OBJECT_EGG_INVINCIBLE) {
-        obj1->x = RESOLUTION_COLS + 1; /* Move fireball off-screen */
-        obj2->x = RESOLUTION_COLS + 1; /* Move target off-screen */
+        obj1->x = OFFSCREEN_X; /* Move fireball off-screen */
+        obj2->x = OFFSCREEN_X; /* Move target off-screen */
         user_score += cfg->scoring.fireball_kill;
         return;
     }
     if (obj2->type == OBJECT_FIRE_BALL && obj1->type < OBJECT_EGG_INVINCIBLE) {
-        obj2->x = RESOLUTION_COLS + 1; /* Move fireball off-screen */
-        obj1->x = RESOLUTION_COLS + 1; /* Move target off-screen */
+        obj2->x = OFFSCREEN_X; /* Move fireball off-screen */
+        obj1->x = OFFSCREEN_X; /* Move target off-screen */
         user_score += cfg->scoring.fireball_kill;
         return;
     }
@@ -287,12 +297,12 @@ static void collect_powerup(object_t *powerup)
     if (powerup->type == OBJECT_EGG_INVINCIBLE) {
         powerup_time = cfg->powerups.duration;
         powerup_type = OBJECT_EGG_INVINCIBLE;
-        powerup->x = RESOLUTION_COLS + 1;
+        powerup->x = OFFSCREEN_X;
         user_score += cfg->scoring.powerup_collect;
     } else if (powerup->type == OBJECT_EGG_FIRE) {
         powerup_time = cfg->powerups.duration;
         powerup_type = OBJECT_EGG_FIRE;
-        powerup->x = RESOLUTION_COLS + 1;
+        powerup->x = OFFSCREEN_X;
         user_score += cfg->scoring.powerup_collect;
     }
 }
@@ -419,8 +429,8 @@ static bounding_rect_t get_bounds(const object_t *obj, bool is_player)
 
     /* Apply player-specific duck adjustments */
     if (is_player && obj->state == STATE_DUCK) {
-        bounds.top += 6;    /* Lower the top of hitbox */
-        bounds.right += 10; /* Extend width for duck posture */
+        bounds.top += DUCK_HITBOX_TOP_OFFSET;
+        bounds.right += DUCK_HITBOX_RIGHT_EXTEND;
     }
 
     return bounds;
@@ -546,9 +556,8 @@ static void render_trex(const object_t *object)
             if (!sprite_get_pixel(sprite, i, j))
                 continue;
 
-            draw_render_colored_block(object->x + j,
-                                      object->y + i - object->height, 1, 1,
-                                      s_color_r, s_color_g, s_color_b);
+            draw_block_color(object->x + j, object->y + i - object->height, 1,
+                             1, s_color_r, s_color_g, s_color_b);
         }
     }
 
@@ -556,41 +565,35 @@ static void render_trex(const object_t *object)
     if (object->state == STATE_DUCK || object->frame == 0)
         return;
 
-    /* Draw animated legs based on frame */
-    if (object->frame == 1) {
-        /* Left leg raised */
-        draw_render_colored_block(object->x + 4,
-                                  object->y + 12 - object->height, 2, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 10,
-                                  object->y + 12 - object->height, 1, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 5,
-                                  object->y + 13 - object->height, 3, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 10,
-                                  object->y + 13 - object->height, 1, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 10,
-                                  object->y + 14 - object->height, 2, 1,
-                                  s_color_r, s_color_g, s_color_b);
-    } else if (object->frame == 2) {
-        /* Right leg raised */
-        draw_render_colored_block(object->x + 4,
-                                  object->y + 12 - object->height, 2, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 10,
-                                  object->y + 12 - object->height, 1, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 4,
-                                  object->y + 13 - object->height, 1, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 10,
-                                  object->y + 13 - object->height, 3, 1,
-                                  s_color_r, s_color_g, s_color_b);
-        draw_render_colored_block(object->x + 4,
-                                  object->y + 14 - object->height, 2, 1,
-                                  s_color_r, s_color_g, s_color_b);
+    /* Leg animation data: x_offset, y_offset, width, height */
+    static const int leg_frames[][5][4] = {
+        [1] =
+            {
+                {4, 12, 2, 1},
+                {10, 12, 1, 1},
+                {5, 13, 3, 1},
+                {10, 13, 1, 1},
+                {10, 14, 2, 1},
+            },
+        [2] =
+            {
+                {4, 12, 2, 1},
+                {10, 12, 1, 1},
+                {4, 13, 1, 1},
+                {10, 13, 3, 1},
+                {4, 14, 2, 1},
+            },
+    };
+
+    /* Draw animated legs */
+    if (object->frame == 1 || object->frame == 2) {
+        const int (*rects)[4] = leg_frames[object->frame];
+        for (int i = 0; i < 5; i++) {
+            draw_block_color(object->x + rects[i][0],
+                             object->y + rects[i][1] - object->height,
+                             rects[i][2], rects[i][3], s_color_r, s_color_g,
+                             s_color_b);
+        }
     }
 }
 
@@ -606,9 +609,67 @@ static void render_sprite_object(const object_t *object,
             if (!sprite_get_pixel(sprite, i, j))
                 continue;
 
-            draw_render_colored_block(
-                object->x + j, object->y + i - object->height, 1, 1, r, g, b);
+            draw_block_color(object->x + j, object->y + i - object->height, 1,
+                             1, r, g, b);
         }
+    }
+}
+
+/* Render ground hole */
+static void render_ground_hole(const object_t *object)
+{
+    draw_block(object->x, object->y - object->height, object->cols,
+               object->rows, TUI_COLOR_PAIR(1));
+    short r = is_dead ? 178 : 182;
+    short g = is_dead ? 178 : 122;
+    short b = is_dead ? 178 : 87;
+    draw_block_color(object->x - 2, object->y - object->height, 2, 5, r, g, b);
+    draw_block_color(object->x + object->cols, object->y - object->height, 2, 5,
+                     r, g, b);
+}
+
+/* Render fireball */
+static void render_fireball(const object_t *object)
+{
+    draw_block_color(object->x, object->y - object->height, 2, 1,
+                     is_dead ? 178 : 182, is_dead ? 178 : 122,
+                     is_dead ? 178 : 87);
+}
+
+/* Get egg colors based on type and frame */
+static void get_egg_colors(const object_t *object, short *r, short *g, short *b)
+{
+    const game_config_t *cfg = ensure_cfg();
+    *r = cfg->colors.egg_base.r;
+    *g = cfg->colors.egg_base.g;
+    *b = cfg->colors.egg_base.b;
+
+    if (object->type == OBJECT_EGG_INVINCIBLE) {
+        if (object->frame == 1) {
+            *r = 234;
+            *g = 227;
+            *b = 170;
+        } else if (object->frame == 2) {
+            *r = 234;
+            *g = 212;
+            *b = 64;
+        }
+    } else if (object->type == OBJECT_EGG_FIRE) {
+        if (object->frame == 1) {
+            *r = 255;
+            *g = 170;
+            *b = 80;
+        } else if (object->frame == 2) {
+            *r = 200;
+            *g = 65;
+            *b = 40;
+        }
+    }
+
+    if (is_dead) {
+        *r = 170;
+        *g = 170;
+        *b = 170;
     }
 }
 
@@ -627,22 +688,13 @@ void play_render_object(object_t const *object)
 
     /* Handle ground hole rendering */
     if (object->type == OBJECT_GROUND_HOLE) {
-        draw_render_block(object->x, object->y - object->height, object->cols,
-                          object->rows, TUI_COLOR_PAIR(1));
-        draw_render_colored_block(object->x - 2, object->y - object->height, 2,
-                                  5, is_dead ? 178 : 182, is_dead ? 178 : 122,
-                                  is_dead ? 178 : 87);
-        draw_render_colored_block(
-            object->x + object->cols, object->y - object->height, 2, 5,
-            is_dead ? 178 : 182, is_dead ? 178 : 122, is_dead ? 178 : 87);
+        render_ground_hole(object);
         return;
     }
 
     /* Handle fireball rendering */
     if (object->type == OBJECT_FIRE_BALL) {
-        draw_render_colored_block(object->x, object->y - object->height, 2, 1,
-                                  is_dead ? 178 : 182, is_dead ? 178 : 122,
-                                  is_dead ? 178 : 87);
+        render_fireball(object);
         return;
     }
 
@@ -666,32 +718,8 @@ void play_render_object(object_t const *object)
         break;
 
     case OBJECT_EGG_INVINCIBLE:
-        r = cfg->colors.egg_base.r;
-        g = cfg->colors.egg_base.g;
-        b = cfg->colors.egg_base.b;
-        if (object->frame == 1) {
-            r = 234, g = 227, b = 170;
-        } else if (object->frame == 2) {
-            r = 234, g = 212, b = 64;
-        }
-        if (is_dead) {
-            r = 170, g = 170, b = 170;
-        }
-        sprite = &sprite_egg;
-        break;
-
     case OBJECT_EGG_FIRE:
-        r = cfg->colors.egg_base.r;
-        g = cfg->colors.egg_base.g;
-        b = cfg->colors.egg_base.b;
-        if (object->frame == 1) {
-            r = 255, g = 170, b = 80;
-        } else if (object->frame == 2) {
-            r = 200, g = 65, b = 40;
-        }
-        if (is_dead) {
-            r = 170, g = 170, b = 170;
-        }
+        get_egg_colors(object, &r, &g, &b);
         sprite = &sprite_egg;
         break;
 
@@ -1121,26 +1149,25 @@ void play_render_world()
                                        ? &cfg->colors.ground_dead_secondary
                                        : &cfg->colors.ground_normal_secondary;
 
-    draw_render_colored_block(0, RESOLUTION_ROWS - 5, RESOLUTION_COLS, 1,
-                              primary->r, primary->g, primary->b);
-    draw_render_colored_block(0, RESOLUTION_ROWS - 4, RESOLUTION_COLS, 3,
-                              secondary->r, secondary->g, secondary->b);
-    draw_render_colored_block(0, RESOLUTION_ROWS - 1, RESOLUTION_COLS, 1, 0, 0,
-                              0);
+    draw_block_color(0, RESOLUTION_ROWS - 5, RESOLUTION_COLS, 1, primary->r,
+                     primary->g, primary->b);
+    draw_block_color(0, RESOLUTION_ROWS - 4, RESOLUTION_COLS, 3, secondary->r,
+                     secondary->g, secondary->b);
+    draw_block_color(0, RESOLUTION_ROWS - 1, RESOLUTION_COLS, 1, 0, 0, 0);
 
     /* Draw specks */
     const rgb_color_t *speck =
         is_dead ? &cfg->colors.ground_dead_primary : &cfg->colors.ground_speck;
     for (int i = 0; i < RESOLUTION_COLS; ++i) {
         if (((distance + i) % cfg->render.speck_interval_1) == 0)
-            draw_render_text_with_background(
-                i, RESOLUTION_ROWS - 4, "_", TUI_A_BOLD, speck->r, speck->g,
-                speck->b, secondary->r, secondary->g, secondary->b);
+            draw_text_bg(i, RESOLUTION_ROWS - 4, "_", TUI_A_BOLD, speck->r,
+                         speck->g, speck->b, secondary->r, secondary->g,
+                         secondary->b);
 
         if (((distance + i) % cfg->render.speck_interval_2) == 0)
-            draw_render_text_with_background(
-                i, RESOLUTION_ROWS - 3, ".", TUI_A_BOLD, speck->r, speck->g,
-                speck->b, secondary->r, secondary->g, secondary->b);
+            draw_text_bg(i, RESOLUTION_ROWS - 3, ".", TUI_A_BOLD, speck->r,
+                         speck->g, speck->b, secondary->r, secondary->g,
+                         secondary->b);
     }
 
     /* Draw other game objects */
@@ -1159,56 +1186,53 @@ void play_render_world()
     if (is_dead) {
         static const char *death_text = "Failed";
         static const int death_text_len = 9;
-        draw_render_colored_text((RESOLUTION_COLS >> 1) - (death_text_len >> 1),
-                                 (RESOLUTION_ROWS >> 1) - 5,
-                                 (char *) death_text, TUI_A_BOLD, 255, 70, 70);
+        draw_text_color((RESOLUTION_COLS >> 1) - (death_text_len >> 1),
+                        (RESOLUTION_ROWS >> 1) - 5, (char *) death_text,
+                        TUI_A_BOLD, 255, 70, 70);
 
         char sz_user_score[32] = {0};
         int score_len = snprintf(sz_user_score, sizeof(sz_user_score),
                                  "Final Score: %d", user_score);
-        draw_render_colored_text((RESOLUTION_COLS >> 1) - (score_len >> 1),
-                                 (RESOLUTION_ROWS >> 1) - 4, sz_user_score, 0,
-                                 255, 255, 255);
+        draw_text_color((RESOLUTION_COLS >> 1) - (score_len >> 1),
+                        (RESOLUTION_ROWS >> 1) - 4, sz_user_score, 0, 255, 255,
+                        255);
 
         static const char *restart_text = "Press SPACE to restart!";
         static const int restart_text_len =
             23; /* Cache strlen("Press SPACE to restart!") */
-        draw_render_colored_text(
-            (RESOLUTION_COLS >> 1) - (restart_text_len >> 1),
-            (RESOLUTION_ROWS >> 1) - 2, (char *) restart_text, 0, 255, 255,
-            255);
+        draw_text_color((RESOLUTION_COLS >> 1) - (restart_text_len >> 1),
+                        (RESOLUTION_ROWS >> 1) - 2, (char *) restart_text, 0,
+                        255, 255, 255);
     } else {
         /* Draw the player's user score */
-        draw_render_colored_text(RESOLUTION_COLS - 20, 2, "User Score", 0, 255,
-                                 255, 255);
+        draw_text_color(RESOLUTION_COLS - 20, 2, "User Score", 0, 255, 255,
+                        255);
 
         char sz_text[128] = {0};
         snprintf(sz_text, sizeof(sz_text), "%d", user_score);
-        draw_render_colored_text(RESOLUTION_COLS - 8, 2, sz_text, TUI_A_BOLD, 0,
-                                 255, 0);
+        draw_text_color(RESOLUTION_COLS - 8, 2, sz_text, TUI_A_BOLD, 0, 255, 0);
 
         /* Draw streak counter if active */
         if (aerial_streak > 0) {
             snprintf(sz_text, sizeof(sz_text), "Streak: %dx",
                      aerial_streak + 1);
             /* Gold color for streak */
-            draw_render_colored_text(RESOLUTION_COLS - 20, 4, sz_text,
-                                     TUI_A_BOLD, 255, 215, 0);
+            draw_text_color(RESOLUTION_COLS - 20, 4, sz_text, TUI_A_BOLD, 255,
+                            215, 0);
         }
 
         /* Draw max streak */
         if (max_streak > 0) {
             snprintf(sz_text, sizeof(sz_text), "Max: %dx", max_streak + 1);
             /* Gray for max streak */
-            draw_render_colored_text(RESOLUTION_COLS - 20, 5, sz_text, 0, 200,
-                                     200, 200);
+            draw_text_color(RESOLUTION_COLS - 20, 5, sz_text, 0, 200, 200, 200);
         }
 
         memset(sz_text, 0, 128);
         int level_len =
             snprintf(sz_text, sizeof(sz_text), "LEVEL %d", current_level + 1);
-        draw_render_colored_text((RESOLUTION_COLS >> 1) - (level_len >> 1), 2,
-                                 sz_text, TUI_A_BOLD, 255, 255, 255);
+        draw_text_color((RESOLUTION_COLS >> 1) - (level_len >> 1), 2, sz_text,
+                        TUI_A_BOLD, 255, 255, 255);
     }
 }
 

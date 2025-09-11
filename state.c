@@ -88,12 +88,14 @@ void state_set_screen_type(screen_type_t screen)
         play_init_world();
 }
 
-int state_get_resolution(int type)
+int state_get_rows(void)
 {
-    int height = tui_get_max_y(tui_stdscr);
-    int width = tui_get_max_x(tui_stdscr);
+    return tui_get_max_y(tui_stdscr);
+}
 
-    return type == 0 ? height : width;
+int state_get_cols(void)
+{
+    return tui_get_max_x(tui_stdscr);
 }
 
 void state_handle_input(int key_code)

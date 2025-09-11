@@ -53,14 +53,14 @@ static void menu_draw_trex(int x, int y)
     for (size_t i = 0; i < sizeof(menu_trex_parts) / sizeof(menu_trex_parts[0]);
          i++) {
         const sprite_rect_t *rect = &menu_trex_parts[i];
-        draw_render_colored_block(x + rect->x, y + rect->y, rect->w, rect->h,
-                                  color->r, color->g, color->b);
+        draw_block_color(x + rect->x, y + rect->y, rect->w, rect->h, color->r,
+                         color->g, color->b);
     }
 
     /* Eye - special color */
     const rgb_color_t *eye_color = &cfg->colors.menu_selected;
-    draw_render_colored_block(x + 12, y + 1, 1, 1, eye_color->r, eye_color->g,
-                              eye_color->b);
+    draw_block_color(x + 12, y + 1, 1, 1, eye_color->r, eye_color->g,
+                     eye_color->b);
 }
 
 #define MENU_NUMOPTIONS 2 /* Total number of menu options */
@@ -110,24 +110,24 @@ void menu_render()
     menu_draw_trex(trex_x, trex_y);
 
     /* Title aligned with top of T-Rex */
-    draw_render_colored_text(content_x, trex_y, "T-Rex Runner", 0,
-                             cfg->colors.menu_title.r, cfg->colors.menu_title.g,
-                             cfg->colors.menu_title.b);
+    draw_text_color(content_x, trex_y, "T-Rex Runner", 0,
+                    cfg->colors.menu_title.r, cfg->colors.menu_title.g,
+                    cfg->colors.menu_title.b);
 
     /* Controls section */
     int controls_y = trex_y + 3;
-    draw_render_colored_text(content_x, controls_y, "Controls:", 0,
-                             cfg->colors.menu_title.r, cfg->colors.menu_title.g,
-                             cfg->colors.menu_title.b);
-    draw_render_colored_text(content_x + 2, controls_y + 1, "Jump: SPACE or UP",
-                             0, cfg->colors.menu_help.r,
-                             cfg->colors.menu_help.g, cfg->colors.menu_help.b);
-    draw_render_colored_text(content_x + 2, controls_y + 2, "Crouch: DOWN", 0,
-                             cfg->colors.menu_help.r, cfg->colors.menu_help.g,
-                             cfg->colors.menu_help.b);
-    draw_render_colored_text(content_x + 2, controls_y + 3, "Quit: ESC or Q", 0,
-                             cfg->colors.menu_help.r, cfg->colors.menu_help.g,
-                             cfg->colors.menu_help.b);
+    draw_text_color(content_x, controls_y, "Controls:", 0,
+                    cfg->colors.menu_title.r, cfg->colors.menu_title.g,
+                    cfg->colors.menu_title.b);
+    draw_text_color(content_x + 2, controls_y + 1, "Jump: SPACE or UP", 0,
+                    cfg->colors.menu_help.r, cfg->colors.menu_help.g,
+                    cfg->colors.menu_help.b);
+    draw_text_color(content_x + 2, controls_y + 2, "Crouch: DOWN", 0,
+                    cfg->colors.menu_help.r, cfg->colors.menu_help.g,
+                    cfg->colors.menu_help.b);
+    draw_text_color(content_x + 2, controls_y + 3, "Quit: ESC or Q", 0,
+                    cfg->colors.menu_help.r, cfg->colors.menu_help.g,
+                    cfg->colors.menu_help.b);
 
     /* Menu options */
     int menu_y = controls_y + 5;
@@ -137,19 +137,19 @@ void menu_render()
 
         if (i == (int) selected_menu_id) {
             /* Selected item with simple highlight */
-            draw_render_colored_text(
-                content_x - 2, y_pos, ">", 0, cfg->colors.menu_title.r,
-                cfg->colors.menu_title.g, cfg->colors.menu_title.b);
-            draw_render_colored_text(content_x, y_pos, (char *) menu_options[i],
-                                     0, cfg->colors.menu_selected.r,
-                                     cfg->colors.menu_selected.g,
-                                     cfg->colors.menu_selected.b);
+            draw_text_color(content_x - 2, y_pos, ">", 0,
+                            cfg->colors.menu_title.r, cfg->colors.menu_title.g,
+                            cfg->colors.menu_title.b);
+            draw_text_color(content_x, y_pos, (char *) menu_options[i], 0,
+                            cfg->colors.menu_selected.r,
+                            cfg->colors.menu_selected.g,
+                            cfg->colors.menu_selected.b);
         } else {
             /* Unselected item */
-            draw_render_colored_text(content_x, y_pos, (char *) menu_options[i],
-                                     0, cfg->colors.menu_unselected.r,
-                                     cfg->colors.menu_unselected.g,
-                                     cfg->colors.menu_unselected.b);
+            draw_text_color(content_x, y_pos, (char *) menu_options[i], 0,
+                            cfg->colors.menu_unselected.r,
+                            cfg->colors.menu_unselected.g,
+                            cfg->colors.menu_unselected.b);
         }
     }
 }

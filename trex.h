@@ -312,43 +312,43 @@ typedef struct {
 } render_buffer_t;
 
 /* Draw text with ncurses flags */
-void draw_render_text(int x, int y, char *text, int flags);
+void draw_text(int x, int y, char *text, int flags);
 
 /* Draw text with RGB colors */
-void draw_render_colored_text(int x,
-                              int y,
-                              char *text,
-                              int flags,
-                              short r,
-                              short g,
-                              short b);
+void draw_text_color(int x,
+                     int y,
+                     char *text,
+                     int flags,
+                     short r,
+                     short g,
+                     short b);
 
 /* Draw text with RGB colors and RGB background */
-void draw_render_text_with_background(int x,
-                                      int y,
-                                      char *text,
-                                      int flags,
-                                      short r,
-                                      short g,
-                                      short b,
-                                      short r2,
-                                      short g2,
-                                      short b2);
+void draw_text_bg(int x,
+                  int y,
+                  char *text,
+                  int flags,
+                  short r,
+                  short g,
+                  short b,
+                  short r2,
+                  short g2,
+                  short b2);
 
 /* Draw an empty block with ncurses flags */
-void draw_render_block(int x, int y, int cols, int rows, int flags);
+void draw_block(int x, int y, int cols, int rows, int flags);
 
 /* Draw an empty block with RGB colors */
-void draw_render_colored_block(int x,
-                               int y,
-                               int cols,
-                               int rows,
-                               short r,
-                               short g,
-                               short b);
+void draw_block_color(int x,
+                      int y,
+                      int cols,
+                      int rows,
+                      short r,
+                      short g,
+                      short b);
 
 /* Draw the game logo */
-void draw_render_logo();
+void draw_logo(int x, int y);
 
 /* Get color ID for given RGB values - Used internally by render system */
 int draw_get_color_id(color_t **colors,
@@ -459,9 +459,8 @@ screen_type_t state_get_screen_type();
 screen_type_t state_restore_screen_type();
 
 /* Resolution management */
-int state_get_resolution(int type); /* 0 for rows, 1 for cols */
-int state_get_resolution_rows();
-int state_get_resolution_cols();
+int state_get_rows(void);
+int state_get_cols(void);
 
 /* Input handling */
 void state_handle_input(int key_code);
@@ -474,6 +473,6 @@ bool state_is_running();
 void sprites_init(void);
 
 /* Convenience macros */
-#define RESOLUTION_ROWS (state_get_resolution(0))
-#define RESOLUTION_COLS (state_get_resolution(1))
+#define RESOLUTION_ROWS (state_get_rows())
+#define RESOLUTION_COLS (state_get_cols())
 #define TICKCOUNT (state_get_time_ms())

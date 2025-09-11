@@ -215,7 +215,7 @@ void draw_clear_back_buffer(void)
 }
 
 /* Core rendering functions with buffering */
-void draw_render_text(int x, int y, char *text, int flags)
+void draw_text(int x, int y, char *text, int flags)
 {
     tui_window_t *buffer = get_draw_buffer();
     int text_len = strlen(text);
@@ -227,13 +227,13 @@ void draw_render_text(int x, int y, char *text, int flags)
     mark_dirty(x, y, text_len, 1);
 }
 
-void draw_render_colored_text(int x,
-                              int y,
-                              char *text,
-                              int flags,
-                              short r,
-                              short g,
-                              short b)
+void draw_text_color(int x,
+                     int y,
+                     char *text,
+                     int flags,
+                     short r,
+                     short g,
+                     short b)
 {
     tui_window_t *buffer = get_draw_buffer();
     int color_pair =
@@ -247,7 +247,7 @@ void draw_render_colored_text(int x,
     mark_dirty(x, y, text_len, 1);
 }
 
-void draw_render_block(int x, int y, int cols, int rows, int flags)
+void draw_block(int x, int y, int cols, int rows, int flags)
 {
     tui_window_t *buffer = get_draw_buffer();
     tui_wattron(buffer, flags);
@@ -262,13 +262,13 @@ void draw_render_block(int x, int y, int cols, int rows, int flags)
     mark_dirty(x, y, cols, rows);
 }
 
-void draw_render_colored_block(int x,
-                               int y,
-                               int cols,
-                               int rows,
-                               short r,
-                               short g,
-                               short b)
+void draw_block_color(int x,
+                      int y,
+                      int cols,
+                      int rows,
+                      short r,
+                      short g,
+                      short b)
 {
     tui_window_t *buffer = get_draw_buffer();
     int color_pair =
@@ -285,16 +285,16 @@ void draw_render_colored_block(int x,
     mark_dirty(x, y, cols, rows);
 }
 
-void draw_render_text_with_background(int x,
-                                      int y,
-                                      char *text,
-                                      int flags,
-                                      short r,
-                                      short g,
-                                      short b,
-                                      short r2,
-                                      short g2,
-                                      short b2)
+void draw_text_bg(int x,
+                  int y,
+                  char *text,
+                  int flags,
+                  short r,
+                  short g,
+                  short b,
+                  short r2,
+                  short g2,
+                  short b2)
 {
     tui_window_t *buffer = get_draw_buffer();
     int color_pair = draw_get_color_id(v_text_colors, r, g, b, r2, g2, b2,
@@ -308,38 +308,35 @@ void draw_render_text_with_background(int x,
     mark_dirty(x, y, text_len, 1);
 }
 
-void draw_render_logo()
+void draw_logo(int x, int y)
 {
-    draw_render_text(
-        (RESOLUTION_COLS >> 1) - 40, LOGO_START_Y,
+    draw_text(
+        x, y,
         "  _____ _                                _______     _____       "
         "                ",
         TUI_COLOR_PAIR(1));
-    draw_render_text(
-        (RESOLUTION_COLS >> 1) - 40, LOGO_START_Y + 1,
+    draw_text(
+        x, y + 1,
         " / ____| |                              |__   __|   |  __ \\     "
         "       _     _   ",
         TUI_COLOR_PAIR(1));
-    draw_render_text(
-        (RESOLUTION_COLS >> 1) - 40, LOGO_START_Y + 2,
-        "| |    | |__  _ __ ___  _ __ ___   ___     | |______| |__) "
-        "|_____  ___| |_ _| |_ ",
-        TUI_COLOR_PAIR(1));
-    draw_render_text(
-        (RESOLUTION_COLS >> 1) - 40, LOGO_START_Y + 3,
+    draw_text(x, y + 2,
+              "| |    | |__  _ __ ___  _ __ ___   ___     | |______| |__) "
+              "|_____  ___| |_ _| |_ ",
+              TUI_COLOR_PAIR(1));
+    draw_text(
+        x, y + 3,
         "| |    | '_ \\| '__/ _ \\| '_ ` _ \\ / _ \\    | |______|  _  // "
         "_ \\ \\/ |_   _|_   _|",
         TUI_COLOR_PAIR(1));
-    draw_render_text(
-        (RESOLUTION_COLS >> 1) - 40, LOGO_START_Y + 4,
-        "| |____| | | | | | (_) | | | | | |  __/    | |      | | \\ |  "
-        "__/>  <  |_|   |_|  ",
-        TUI_COLOR_PAIR(1));
-    draw_render_text(
-        (RESOLUTION_COLS >> 1) - 40, LOGO_START_Y + 5,
-        " \\_____|_| |_|_|  \\___/|_| |_| |_|\\___|    |_|      |_|  "
-        "\\_\\___/_/\\_\\            ",
-        TUI_COLOR_PAIR(1));
+    draw_text(x, y + 4,
+              "| |____| | | | | | (_) | | | | | |  __/    | |      | | \\ |  "
+              "__/>  <  |_|   |_|  ",
+              TUI_COLOR_PAIR(1));
+    draw_text(x, y + 5,
+              " \\_____|_| |_|_|  \\___/|_| |_| |_|\\___|    |_|      |_|  "
+              "\\_\\___/_/\\_\\            ",
+              TUI_COLOR_PAIR(1));
 }
 
 /* Color management cleanup */
