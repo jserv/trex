@@ -131,9 +131,9 @@ static void spatial_clear(void)
         spatial_hash.max_objects = cfg->limits.max_objects;
     }
 
-    for (int i = 0; i < spatial_hash.bucket_count; i++) {
-        spatial_hash.buckets[i] = NULL;
-    }
+    /* Clear spatial hash - use memset for efficiency */
+    memset(spatial_hash.buckets, 0,
+           spatial_hash.bucket_count * sizeof(spatial_node_t *));
     spatial_hash.next_free_node = 0;
 }
 
@@ -153,8 +153,9 @@ static void spatial_add_object(object_t *object)
 
     /* Skip objects that are completely off-screen to reduce collision workload
      */
-    if (object->x + object->cols < -cfg->physics.bounds_buffer ||
-        object->x > RESOLUTION_COLS + cfg->physics.bounds_buffer)
+    int bounds_buffer = cfg->physics.bounds_buffer;
+    if (object->x + object->cols < -bounds_buffer ||
+        object->x > RESOLUTION_COLS + bounds_buffer)
         return;
 
     /* Prevent node pool overflow */
@@ -225,21 +226,14 @@ static void spatial_collision_check_pair(object_t *obj1, object_t *obj2)
         return;
 
     /* Get bounding rectangles for collision detection */
-    bounding_rect_t bounds1, bounds2;
+    bool has_ground_hole = involves_ground_hole(obj1, obj2);
+    bool player_duck_adjust =
+        !has_ground_hole && ((obj1 == &player) || (obj2 == &player));
 
-    /* Apply special duck adjustments for player vs non-ground-hole collisions
-     */
-    if (obj1 == &player && !involves_ground_hole(obj1, obj2)) {
-        bounds1 = get_bounds(obj1, true);
-        bounds2 = get_bounds(obj2, false);
-    } else if (obj2 == &player && !involves_ground_hole(obj1, obj2)) {
-        bounds1 = get_bounds(obj1, false);
-        bounds2 = get_bounds(obj2, true);
-    } else {
-        /* Standard bounds for non-player or ground hole collisions */
-        bounds1 = get_bounds(obj1, false);
-        bounds2 = get_bounds(obj2, false);
-    }
+    bounding_rect_t bounds1 =
+        get_bounds(obj1, player_duck_adjust && obj1 == &player);
+    bounding_rect_t bounds2 =
+        get_bounds(obj2, player_duck_adjust && obj2 == &player);
 
     /* Check for collision */
     if (!bounds_overlap(&bounds1, &bounds2))
@@ -247,16 +241,14 @@ static void spatial_collision_check_pair(object_t *obj1, object_t *obj2)
 
     /* Handle collision effects based on object types */
 
-    /* Fireball vs enemy collisions */
-    if (obj1->type == OBJECT_FIRE_BALL && obj2->type < OBJECT_EGG_INVINCIBLE) {
-        obj1->x = OFFSCREEN_X; /* Move fireball off-screen */
-        obj2->x = OFFSCREEN_X; /* Move target off-screen */
-        user_score += cfg->scoring.fireball_kill;
-        return;
-    }
-    if (obj2->type == OBJECT_FIRE_BALL && obj1->type < OBJECT_EGG_INVINCIBLE) {
-        obj2->x = OFFSCREEN_X; /* Move fireball off-screen */
-        obj1->x = OFFSCREEN_X; /* Move target off-screen */
+    /* Fireball vs enemy collisions - handle both directions in one check */
+    bool is_fireball_collision =
+        (obj1->type == OBJECT_FIRE_BALL &&
+         obj2->type < OBJECT_EGG_INVINCIBLE) ||
+        (obj2->type == OBJECT_FIRE_BALL && obj1->type < OBJECT_EGG_INVINCIBLE);
+
+    if (is_fireball_collision) {
+        obj1->x = obj2->x = OFFSCREEN_X;
         user_score += cfg->scoring.fireball_kill;
         return;
     }
@@ -500,10 +492,10 @@ static bool is_player_powerup(object_t const *obj1, object_t const *obj2)
  *
  * Return true if player is grounded (running or ducking)
  */
-static bool is_player_on_ground(void)
+static inline bool is_player_on_ground(void)
 {
-    return (player.state == STATE_RUNNING || player.state == STATE_DUCK) &&
-           player.height <= 0;
+    return player.height <= 0 &&
+           (player.state == STATE_RUNNING || player.state == STATE_DUCK);
 }
 
 /* Record jump key press for buffering */
@@ -551,13 +543,15 @@ static void render_trex(const object_t *object)
         (object->state == STATE_DUCK) ? &sprite_trex_duck : &sprite_trex_normal;
 
     /* Draw T-Rex using sprite data */
+    int base_y = object->y - object->height;
     for (int i = 0; i < sprite->rows; i++) {
+        int y_pos = base_y + i;
         for (int j = 0; j < sprite->cols; j++) {
             if (!sprite_get_pixel(sprite, i, j))
                 continue;
 
-            draw_block_color(object->x + j, object->y + i - object->height, 1,
-                             1, s_color_r, s_color_g, s_color_b);
+            draw_block_color(object->x + j, y_pos, 1, 1, s_color_r, s_color_g,
+                             s_color_b);
         }
     }
 
@@ -606,13 +600,14 @@ static void render_sprite_object(const object_t *object,
                                  short g,
                                  short b)
 {
+    int base_y = object->y - object->height;
     for (int i = 0; i < object->rows; ++i) {
+        int y_pos = base_y + i;
         for (int j = 0; j < object->cols; ++j) {
             if (!sprite_get_pixel(sprite, i, j))
                 continue;
 
-            draw_block_color(object->x + j, object->y + i - object->height, 1,
-                             1, r, g, b);
+            draw_block_color(object->x + j, y_pos, 1, 1, r, g, b);
         }
     }
 }
@@ -638,40 +633,42 @@ static void render_fireball(const object_t *object)
                      is_dead ? 178 : 87);
 }
 
+/* Egg color lookup tables */
+static const short egg_colors[2][3][3] = {
+    /* OBJECT_EGG_INVINCIBLE frames */
+    {
+        {-1, -1, -1},
+        {234, 227, 170},
+        {234, 212, 64},
+    },
+    /* OBJECT_EGG_FIRE frames */
+    {
+        {-1, -1, -1},
+        {255, 170, 80},
+        {200, 65, 40},
+    },
+};
+
 /* Get egg colors based on type and frame */
 static void get_egg_colors(const object_t *object, short *r, short *g, short *b)
 {
-    const game_config_t *cfg = ensure_cfg();
-    *r = cfg->colors.egg_base.r;
-    *g = cfg->colors.egg_base.g;
-    *b = cfg->colors.egg_base.b;
-
-    if (object->type == OBJECT_EGG_INVINCIBLE) {
-        if (object->frame == 1) {
-            *r = 234;
-            *g = 227;
-            *b = 170;
-        } else if (object->frame == 2) {
-            *r = 234;
-            *g = 212;
-            *b = 64;
-        }
-    } else if (object->type == OBJECT_EGG_FIRE) {
-        if (object->frame == 1) {
-            *r = 255;
-            *g = 170;
-            *b = 80;
-        } else if (object->frame == 2) {
-            *r = 200;
-            *g = 65;
-            *b = 40;
-        }
+    if (is_dead) {
+        *r = *g = *b = 170;
+        return;
     }
 
-    if (is_dead) {
-        *r = 170;
-        *g = 170;
-        *b = 170;
+    const game_config_t *cfg = ensure_cfg();
+    int type_idx = object->type - OBJECT_EGG_INVINCIBLE;
+
+    if (object->frame > 0 && object->frame < 3 && type_idx >= 0 &&
+        type_idx < 2) {
+        *r = egg_colors[type_idx][object->frame][0];
+        *g = egg_colors[type_idx][object->frame][1];
+        *b = egg_colors[type_idx][object->frame][2];
+    } else {
+        *r = cfg->colors.egg_base.r;
+        *g = cfg->colors.egg_base.g;
+        *b = cfg->colors.egg_base.b;
     }
 }
 
@@ -816,16 +813,17 @@ void play_init_object(object_t *object)
     object->height = HEIGHT_ZERO;
     object->max_frames = data->max_frames;
     object->enemy = data->enemy;
-    object->y += data->y_adjust;
 
-    /* Set bounding box */
-    object->bounding_box.x = data->bbox_x;
-    object->bounding_box.y = data->bbox_y;
-    object->bounding_box.width = data->bbox_width;
-    object->bounding_box.height = data->bbox_height;
+    /* Set bounding box in one go */
+    object->bounding_box = (bounding_box_t){
+        .x = data->bbox_x,
+        .y = data->bbox_y,
+        .width = data->bbox_width,
+        .height = data->bbox_height,
+    };
 
-    /* Final y adjustment */
-    object->y -= object->rows;
+    /* Combined y adjustments */
+    object->y += data->y_adjust - object->rows;
 }
 
 void play_kill_player()
@@ -983,9 +981,8 @@ void play_update_world(double elapsed)
                     player.state = STATE_FALLING;
             } else if (player.state == STATE_FALLING) {
                 /* Apply fast-fall multiplier if holding down */
-                int fall_speed =
-                    is_fast_falling ? (int) (1 * fast_fall_multiplier) : 1;
-                player.height -= fall_speed;
+                player.height -=
+                    is_fast_falling ? (int) fast_fall_multiplier : 1;
 
                 /* If reached the ground, change to running animation and reset
                  * variables
@@ -1009,21 +1006,18 @@ void play_update_world(double elapsed)
                 spatial_clear();
 
                 /* Update other game objects besides the player */
+                int speed = current_level > 7 ? 2 : 1;
                 for (int i = 0; i < cfg->limits.max_objects; ++i) {
                     object_t *object = objects[i];
+                    if (!object)
+                        continue;
 
-                    /* Valid pointer? */
-                    if (object) {
-                        /* If the object is a fireball, increment its x,
-                           otherwise decrement */
-                        if (object->type == OBJECT_FIRE_BALL)
-                            object->x += current_level > 7 ? 2 : 1;
-                        else
-                            object->x -= current_level > 7 ? 2 : 1;
+                    /* Move object based on type */
+                    object->x +=
+                        (object->type == OBJECT_FIRE_BALL) ? speed : -speed;
 
-                        /* Add object to spatial hash for collision detection */
-                        spatial_add_object(object);
-                    }
+                    /* Add object to spatial hash for collision detection */
+                    spatial_add_object(object);
                 }
 
                 /* Add player to spatial hash */
@@ -1118,9 +1112,9 @@ void play_update_world(double elapsed)
 
             /* Update other game objects besides the player */
             for (int i = 0; i < cfg->limits.max_objects; ++i) {
-                if (objects[i])
-                    objects[i]->frame =
-                        (objects[i]->frame + 1) % objects[i]->max_frames;
+                object_t *obj = objects[i];
+                if (obj)
+                    obj->frame = (obj->frame + 1) % obj->max_frames;
             }
 
             /* Update the User Score */
@@ -1230,7 +1224,6 @@ void play_render_world()
             draw_text_color(RESOLUTION_COLS - 20, 5, sz_text, 0, 200, 200, 200);
         }
 
-        memset(sz_text, 0, 128);
         int level_len =
             snprintf(sz_text, sizeof(sz_text), "LEVEL %d", current_level + 1);
         draw_text_color((RESOLUTION_COLS >> 1) - (level_len >> 1), 2, sz_text,
