@@ -556,10 +556,6 @@ static void render_trex(const object_t *object)
     if (object->state == STATE_DUCK || object->frame == 0)
         return;
 
-    /* Clear leg area for animation */
-    draw_render_colored_block(object->x + 4, object->y + 12 - object->height, 8,
-                              3, 0, 0, 0);
-
     /* Draw animated legs based on frame */
     if (object->frame == 1) {
         /* Left leg raised */
