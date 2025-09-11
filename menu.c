@@ -44,7 +44,7 @@ static const sprite_rect_t menu_trex_parts[] = {
 };
 
 /* Draw a simplified T-Rex sprite for the menu */
-static void draw_menu_trex(int x, int y)
+static void menu_draw_trex(int x, int y)
 {
     const game_config_t *cfg = ensure_cfg();
     const rgb_color_t *color = &cfg->colors.trex_normal;
@@ -107,7 +107,7 @@ void menu_render()
     int content_x = center_x - cfg->ui.content_offset_x;
 
     /* Draw T-Rex sprite on the left */
-    draw_menu_trex(trex_x, trex_y);
+    menu_draw_trex(trex_x, trex_y);
 
     /* Title aligned with top of T-Rex */
     draw_render_colored_text(content_x, trex_y, "T-Rex Runner", 0,

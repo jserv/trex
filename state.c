@@ -118,13 +118,13 @@ void state_handle_input(int key_code)
     }
 }
 
-static bool is_game_running = true; /* 0 when closing the game */
+static bool state_game_running = true; /* 0 when closing the game */
 void state_quit_game()
 {
-    is_game_running = false;
+    state_game_running = false;
 }
 
 bool state_is_running()
 {
-    return is_game_running;
+    return state_game_running;
 }

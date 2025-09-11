@@ -419,7 +419,7 @@ struct object {
 void play_init_object(object_t *object);
 int play_find_free_slot();
 void play_add_object(int x, int y, object_type_t type);
-void cleanup_objects();
+void play_cleanup_objects();
 
 /* Rendering functions */
 void play_render_object(object_t const *object);
@@ -434,7 +434,7 @@ void play_adjust_for_resize();
 void play_handle_input(int input);
 
 /* Object generation */
-object_type_t random_object(bool b_generate_egg);
+object_type_t play_random_object(bool b_generate_egg);
 
 /* Kill the player */
 void play_kill_player();

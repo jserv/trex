@@ -306,7 +306,7 @@ static object_t **objects = NULL;
  *
  * Return randomly selected object type
  */
-object_type_t random_object(bool b_generate_egg)
+object_type_t play_random_object(bool b_generate_egg)
 {
     /* Generate random value between 1 and 10000 with overflow protection */
     long rand_val = random();
@@ -322,7 +322,7 @@ object_type_t random_object(bool b_generate_egg)
             /* Generated an egg but shouldn't have? Then generate again */
             if (probs[i].object_type >= OBJECT_EGG_INVINCIBLE &&
                 !b_generate_egg)
-                return random_object(b_generate_egg);
+                return play_random_object(b_generate_egg);
             return probs[i].object_type;
         }
     }
@@ -344,7 +344,7 @@ int play_find_free_slot()
     return -1;
 }
 
-void cleanup_objects()
+void play_cleanup_objects()
 {
     const game_config_t *cfg = ensure_cfg();
     if (!objects)
@@ -824,7 +824,7 @@ void play_init_world()
         objects = calloc(cfg->limits.max_objects, sizeof(object_t *));
 
     /* Clear the array that stores the objects */
-    cleanup_objects();
+    play_cleanup_objects();
 
     /* Reset game settings */
     const level_config_t *level = config_get_level(current_level + 1);
@@ -932,7 +932,7 @@ void play_update_world(double elapsed)
         /* Generate obstacles randomly */
         if (f_time_random >= obstacle_time) {
             object_type_t object_type =
-                random_object(powerup_time > 0.0f ? false : true);
+                play_random_object(powerup_time > 0.0f ? false : true);
             play_add_object(RESOLUTION_COLS, RESOLUTION_ROWS - 5, object_type);
 
             const level_config_t *level = config_get_level(current_level + 1);
