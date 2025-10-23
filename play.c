@@ -6,6 +6,34 @@
 #include "private.h"
 #include "trex.h"
 
+/* Ring buffer for fixed-size, cache-friendly object management.
+ * - O(1) push/pop operations
+ * - No malloc/free overhead
+ * - Better cache locality
+ * - Predictable memory usage
+ */
+#define RING_BUFFER_SIZE 64
+#define INVALID_X_SENTINEL (-9999)
+
+typedef struct {
+    object_t items[RING_BUFFER_SIZE]; /* Fixed-size storage */
+    int front, back;                  /* Read/write position */
+    int count;                        /* Number of active items */
+} object_ring_buffer_t;
+
+/* Ring buffer operations */
+static void ring_buffer_init(object_ring_buffer_t *rb);
+static bool ring_buffer_is_full(const object_ring_buffer_t *rb);
+static bool ring_buffer_push(object_ring_buffer_t *rb, const object_t *obj);
+static int ring_buffer_count(const object_ring_buffer_t *rb);
+static void ring_buffer_cleanup_invalid(object_ring_buffer_t *rb);
+
+/* Helper function to check if an object is invalid */
+static inline bool object_is_invalid(const object_t *obj)
+{
+    return obj->x == INVALID_X_SENTINEL;
+}
+
 /* Forward declarations for spatial collision system */
 static void collect_powerup(object_t *powerup);
 
@@ -91,6 +119,56 @@ typedef struct {
 } spatial_hash_t;
 
 static spatial_hash_t spatial_hash;
+
+/* Ring buffer operations: O(1) push/pop with fixed memory footprint */
+
+static void ring_buffer_init(object_ring_buffer_t *rb)
+{
+    rb->front = 0;
+    rb->back = 0;
+    rb->count = 0;
+}
+
+static bool ring_buffer_is_full(const object_ring_buffer_t *rb)
+{
+    return rb->count >= RING_BUFFER_SIZE;
+}
+
+static bool ring_buffer_push(object_ring_buffer_t *rb, const object_t *obj)
+{
+    if (ring_buffer_is_full(rb))
+        return false;
+
+    rb->items[rb->back] = *obj;
+    rb->back = (rb->back + 1) % RING_BUFFER_SIZE;
+    rb->count++;
+    return true;
+}
+
+static int ring_buffer_count(const object_ring_buffer_t *rb)
+{
+    return rb->count;
+}
+
+/* Remove invalid objects from the front of the ring buffer.
+ * Objects marked with x == INVALID_X_SENTINEL are considered invalid.
+ * This prevents buffer overflow and enables continuous gameplay.
+ */
+static void ring_buffer_cleanup_invalid(object_ring_buffer_t *rb)
+{
+    /* Remove invalid objects from front */
+    while (rb->count > 0) {
+        object_t *front_obj = &rb->items[rb->front];
+
+        /* Stop when we hit a valid object */
+        if (!object_is_invalid(front_obj))
+            break;
+
+        /* Pop invalid object */
+        rb->front = (rb->front + 1) % RING_BUFFER_SIZE;
+        rb->count--;
+    }
+}
 
 /**
  * Get spatial bucket index for x coordinate
@@ -299,8 +377,18 @@ static void collect_powerup(object_t *powerup)
     }
 }
 
-/* Array to store the objects in the game - allocated dynamically */
-static object_t **objects = NULL;
+/* Ring buffer to store game objects - fixed-size, no dynamic allocation */
+static object_ring_buffer_t objects_ring;
+
+/* Macro to iterate over all objects in ring buffer
+ * Snapshots count and front to ensure stability during iteration
+ */
+#define FOR_EACH_OBJECT(obj_ptr)                                    \
+    for (int __rb_i = 0, __rb_n = ring_buffer_count(&objects_ring), \
+             __rb_pos = objects_ring.front;                         \
+         __rb_i < __rb_n;                                           \
+         ++__rb_i, __rb_pos = (__rb_pos + 1) % RING_BUFFER_SIZE)    \
+        if ((obj_ptr = &objects_ring.items[__rb_pos]))
 
 /**
  * Generate a random object type based on probability
@@ -334,30 +422,16 @@ object_type_t play_random_object(bool b_generate_egg)
 
 int play_find_free_slot()
 {
-    const game_config_t *cfg = ensure_cfg();
-    if (!objects)
-        return -1;
-
-    for (int i = 0; i < cfg->limits.max_objects; ++i) {
-        if (!objects[i])
-            return i;
-    }
-
-    return -1;
+    /* Ring buffer manages space automatically - always returns 0 if space
+     * available */
+    return ring_buffer_is_full(&objects_ring) ? -1 : 0;
 }
 
 void play_cleanup_objects()
 {
-    const game_config_t *cfg = ensure_cfg();
-    if (!objects)
-        return;
-
-    for (int i = 0; i < cfg->limits.max_objects; ++i) {
-        if (objects[i]) {
-            free(objects[i]);
-            objects[i] = NULL;
-        }
-    }
+    /* Simply reinitialize the ring buffer - no need to free individual objects
+     */
+    ring_buffer_init(&objects_ring);
 }
 
 /**
@@ -752,24 +826,20 @@ void play_add_object(int x, int y, object_type_t type)
     if ((int) type < 0 || (int) type >= cfg->limits.object_types)
         return; /* Invalid object type */
 
-    /* Search for a free position within the array */
-    int i_index = play_find_free_slot();
+    /* Check if ring buffer has space */
+    if (ring_buffer_is_full(&objects_ring))
+        return; /* Buffer full - silently fail */
 
-    /* If the returned position was different from -1, it means there is space
-     */
-    if (i_index != -1) {
-        object_t *object = malloc(sizeof(object_t));
-        if (!object)
-            return; /* Allocation failed - silently fail */
+    /* Create object on stack */
+    object_t object = {
+        .x = x,
+        .y = y,
+        .type = type,
+    };
+    play_init_object(&object);
 
-        object->x = x;
-        object->y = y;
-        object->type = type;
-        play_init_object(object);
-
-        /* Store the created object in the array */
-        objects[i_index] = object;
-    }
+    /* Push to ring buffer - copies the object */
+    ring_buffer_push(&objects_ring, &object);
 }
 
 /* Object initialization data structure */
@@ -815,12 +885,14 @@ void play_init_object(object_t *object)
     object->enemy = data->enemy;
 
     /* Set bounding box in one go */
-    object->bounding_box = (bounding_box_t){
+    /* clang-format off */
+    object->bounding_box = (bounding_box_t) {
         .x = data->bbox_x,
         .y = data->bbox_y,
         .width = data->bbox_width,
         .height = data->bbox_height,
     };
+    /* clang-format on */
 
     /* Combined y adjustments */
     object->y += data->y_adjust - object->rows;
@@ -833,9 +905,6 @@ void play_kill_player()
 
 void play_init_world()
 {
-    /* Initialize configuration on first use */
-    const game_config_t *cfg = ensure_cfg();
-
     /* Initialize random number generator once */
     static bool rng_initialized = false;
     if (!rng_initialized) {
@@ -843,12 +912,8 @@ void play_init_world()
         rng_initialized = true;
     }
 
-    /* Allocate objects array if needed */
-    if (!objects)
-        objects = calloc(cfg->limits.max_objects, sizeof(object_t *));
-
-    /* Clear the array that stores the objects */
-    play_cleanup_objects();
+    /* Initialize ring buffer - no dynamic allocation needed */
+    ring_buffer_init(&objects_ring);
 
     /* Reset game settings */
     const level_config_t *level = config_get_level(current_level + 1);
@@ -894,27 +959,23 @@ void play_adjust_for_resize()
     if (new_player_y > 0)
         player.y = new_player_y;
 
-    /* Clean up objects that are now outside screen bounds */
-    if (objects) {
-        const game_config_t *cfg = ensure_cfg();
-        for (int i = 0; i < cfg->limits.max_objects; i++) {
-            if (objects[i] &&
-                /* Remove objects that are now way outside the screen bounds */
-                (objects[i]->y < -50 || objects[i]->y > RESOLUTION_ROWS + 50 ||
-                 objects[i]->x < -100 ||
-                 objects[i]->x > RESOLUTION_COLS + 100)) {
-                free(objects[i]);
-                objects[i] = NULL;
-            }
+    /* Mark objects outside screen bounds as invalid */
+    object_t *obj;
+    FOR_EACH_OBJECT (obj) {
+        /* Mark as invalid if way outside bounds (will be cleaned up later) */
+        if (obj->y < -50 || obj->y > RESOLUTION_ROWS + 50 || obj->x < -100 ||
+            obj->x > RESOLUTION_COLS + 100) {
+            obj->x = INVALID_X_SENTINEL; /* Mark invalid with sentinel value */
         }
     }
+
+    /* Clean up invalid objects */
+    ring_buffer_cleanup_invalid(&objects_ring);
 }
 
 void play_update_world(double elapsed)
 {
     const game_config_t *cfg = ensure_cfg();
-    if (!objects)
-        return;
 
     static double f_time_10ms = 0.0f;
     static double f_time_150ms = 0.0f;
@@ -1007,9 +1068,10 @@ void play_update_world(double elapsed)
 
                 /* Update other game objects besides the player */
                 int speed = current_level > 7 ? 2 : 1;
-                for (int i = 0; i < cfg->limits.max_objects; ++i) {
-                    object_t *object = objects[i];
-                    if (!object)
+                object_t *object;
+                FOR_EACH_OBJECT (object) {
+                    /* Skip invalid objects */
+                    if (object_is_invalid(object))
                         continue;
 
                     /* Move object based on type */
@@ -1024,9 +1086,9 @@ void play_update_world(double elapsed)
                 spatial_add_object(&player);
 
                 /* Perform collision detection using spatial queries */
-                for (int i = 0; i < cfg->limits.max_objects; ++i) {
-                    object_t *object = objects[i];
-                    if (!object)
+                FOR_EACH_OBJECT (object) {
+                    /* Skip invalid objects */
+                    if (object_is_invalid(object))
                         continue;
 
                     /* Objects are already filtered by spatial_add_object */
@@ -1035,7 +1097,7 @@ void play_update_world(double elapsed)
                         /* Fireballs seek targets using spatial hash
                          * optimization */
                         object_t *target = find_closest_target(object);
-                        if (target)
+                        if (target && !object_is_invalid(target))
                             spatial_collision_check_pair(object, target);
                     } else {
                         /* All other objects check collision with player */
@@ -1048,9 +1110,9 @@ void play_update_world(double elapsed)
                                     player.state == STATE_FALLING);
 
                 /* Process objects for scoring and cleanup */
-                for (int i = 0; i < cfg->limits.max_objects; ++i) {
-                    object_t *object = objects[i];
-                    if (!object)
+                FOR_EACH_OBJECT (object) {
+                    /* Skip invalid objects */
+                    if (object_is_invalid(object))
                         continue;
 
                     /* Check if enemy obstacle just cleared the player */
@@ -1069,20 +1131,22 @@ void play_update_world(double elapsed)
                         }
                     }
 
-                    /* Remove objects that left the screen */
+                    /* Mark objects that left the screen as invalid */
                     bool off_screen = object->x + object->cols < 0 ||
                                       (object->type == OBJECT_FIRE_BALL &&
                                        object->x > RESOLUTION_COLS);
 
                     if (off_screen) {
-                        free(object);
-                        objects[i] = NULL;
+                        object->x = INVALID_X_SENTINEL; /* Mark invalid */
 
                         const level_config_t *level =
                             config_get_level(current_level + 1);
                         user_score += level->level;
                     }
                 }
+
+                /* Clean up invalid objects from ring buffer */
+                ring_buffer_cleanup_invalid(&objects_ring);
 
                 /* Update streak based on landing/airborne state */
                 if (was_airborne_last_frame && !is_airborne) {
@@ -1111,9 +1175,9 @@ void play_update_world(double elapsed)
             player.frame = (player.frame + 1) % player.max_frames;
 
             /* Update other game objects besides the player */
-            for (int i = 0; i < cfg->limits.max_objects; ++i) {
-                object_t *obj = objects[i];
-                if (obj)
+            object_t *obj;
+            FOR_EACH_OBJECT (obj) {
+                if (!object_is_invalid(obj)) /* Valid object */
                     obj->frame = (obj->frame + 1) % obj->max_frames;
             }
 
@@ -1133,10 +1197,6 @@ void play_update_world(double elapsed)
 void play_render_world()
 {
     const game_config_t *cfg = ensure_cfg();
-
-    /* Safety check - ensure objects array is allocated */
-    if (!objects)
-        return;
 
     /* Draw ground layers */
     const rgb_color_t *primary = is_dead ? &cfg->colors.ground_dead_primary
@@ -1167,11 +1227,10 @@ void play_render_world()
     }
 
     /* Draw other game objects */
-    for (int i = 0; i < cfg->limits.max_objects; ++i) {
-        object_t const *object = objects[i];
-
-        /* Valid pointer? */
-        if (object)
+    object_t *object;
+    FOR_EACH_OBJECT (object) {
+        /* Skip invalid objects */
+        if (!object_is_invalid(object)) /* Valid object */
             play_render_object(object);
     }
 
